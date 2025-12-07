@@ -57,6 +57,22 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
 
    Die Konsolen-Ausgabe befindet sich in `logs/scan_scheduler.log`.
 
+## Nextcloud-Einbindung und docling-serve
+
+* Der Scheduler durchsucht standardmäßig zwei Nextcloud-Ordner: einen
+  Dokumente-Ordner (`NEXTCLOUD_DOC_DIR`, Default `/nextcloud/documents`) und
+  einen Bilder-Ordner (`NEXTCLOUD_IMAGE_DIR`, Default
+  `/nextcloud/docling-images`). Beide Pfade lassen sich alternativ über
+  `ROOT_DIRS` (kommagetrennt) überschreiben. Der Bilder-Ordner wird von der
+  SQLite-Datenbank genauso überwacht wie der Dokument-Ordner und kann dadurch
+  bequem mit einer Admin-Oberfläche wie phpLiteAdmin gepflegt werden.
+* Für die Textextraktion wird kein lokales `docling` mehr benötigt. Stattdessen
+  spricht der Worker den bereitgestellten Webservice
+  `docling-serve` unter `DOCLING_SERVE_URL` (Default
+  `http://192.168.177.130:5001/v1/convert/file`). Der Dienst liefert Text und
+  erkannte Bilder; letztere werden im Bilder-Ordner abgelegt und im Text mit
+  eindeutigen Referenzen (`![…](<pfad>)`) vermerkt.
+
 ## Git-Befehle ausführen
 
 * Alle Git-Kommandos (z. B. `git checkout -b <zweig>`, `git switch main`,
