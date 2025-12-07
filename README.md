@@ -59,10 +59,10 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
 
 ## Nextcloud-Einbindung und docling-serve
 
-* Der Scheduler durchsucht standardmäßig zwei Nextcloud-Ordner: einen
-  Dokumente-Ordner (`NEXTCLOUD_DOC_DIR`, Default `/nextcloud/documents`) und
+* Der Scheduler durchsucht standardmäßig zwei Nextcloud-Ordner per WebDAV: einen
+  Dokumente-Ordner (`NEXTCLOUD_DOC_DIR`, Default `/RAGdocuments`) und
   einen Bilder-Ordner (`NEXTCLOUD_IMAGE_DIR`, Default
-  `/nextcloud/docling-images`). Beide Pfade lassen sich alternativ über
+  `/Ragimages`). Beide Pfade lassen sich alternativ über
   `ROOT_DIRS` (kommagetrennt) überschreiben. Der Bilder-Ordner wird von der
   SQLite-Datenbank genauso überwacht wie der Dokument-Ordner und kann dadurch
   bequem mit einer Admin-Oberfläche wie phpLiteAdmin gepflegt werden.

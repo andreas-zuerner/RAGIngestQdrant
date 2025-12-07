@@ -9,11 +9,13 @@ import uuid
 from pathlib import Path
 from typing import Set
 
+from nextcloud_client import env_client, NextcloudError
+
 from helpers import init_conn, compute_file_id, is_due
 
 DB_PATH = os.environ.get("DB_PATH", "DocumentDatabase/state.db")
-NEXTCLOUD_DOC_DIR = os.environ.get("NEXTCLOUD_DOC_DIR", "/nextcloud/documents")
-NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/nextcloud/docling-images")
+NEXTCLOUD_DOC_DIR = os.environ.get("NEXTCLOUD_DOC_DIR", "/RAGdocuments")
+NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/Ragimages")
 ROOT_DIRS = [p for p in os.environ.get("ROOT_DIRS", f"{NEXTCLOUD_DOC_DIR},{NEXTCLOUD_IMAGE_DIR}").split(",") if p]
 EXCLUDE_GLOBS = [g for g in os.environ.get("EXCLUDE_GLOBS", "").split(",") if g]
 FOLLOW_SYMLINKS = os.environ.get("FOLLOW_SYMLINKS", "0") == "1"
@@ -254,77 +256,35 @@ def enqueue_job(conn, fid, reason):
 def sync_and_enqueue(conn):
     added = enq = 0
     seen: Set[str] = set()
+    try:
+        client = env_client()
+    except Exception as exc:
+        print(f"[scan] failed to init Nextcloud client: {exc}", flush=True)
+        return added, enq, 0
+
     for root in ROOT_DIRS:
-        rootp = Path(root)
-        if not rootp.exists():
-            continue
-        for dirpath, _, filenames in os.walk(root, followlinks=FOLLOW_SYMLINKS):
-            if any(part.startswith(".") for part in Path(dirpath).parts):
-                continue
-            for fn in filenames:
-                p = Path(dirpath) / fn
-                if excluded(p):
+        try:
+            for entry in client.walk(root):
+                if entry.get("is_dir"):
                     continue
-                try:
-                    st = p.stat()
-                except FileNotFoundError:
+                path_str = entry.get("path") or ""
+                if excluded(Path(path_str)):
                     continue
+                mtime = int(entry.get("mtime") or 0)
+                size = int(entry.get("size") or 0)
+                content_hash = entry.get("etag")
 
-                fid_guess = compute_file_id(str(p))
-                inode = getattr(st, "st_ino", None)
-                device = getattr(st, "st_dev", None)
-                content_hash = None
-                fid = fid_guess
-
+                fid = fid_guess = compute_file_id(path_str)
                 row = conn.execute(
-                    "SELECT id, mtime, size, content_hash FROM files WHERE id=?",
+                    "SELECT id, content_hash FROM files WHERE id=?",
                     (fid_guess,),
                 ).fetchone()
                 if row:
                     fid = row_get(row, "id", fid_guess)
-                    stored_hash = row_get(row, "content_hash", row_get(row, 3))
-                    prev_mtime = row_get(row, "mtime", row_get(row, 1))
-                    prev_size = row_get(row, "size", row_get(row, 2))
-                    if (
-                        stored_hash
-                        and prev_mtime is not None
-                        and prev_size is not None
-                        and int(prev_mtime) == int(st.st_mtime)
-                        and int(prev_size) == int(st.st_size)
-                    ):
-                        content_hash = stored_hash
-                    else:
-                        try:
-                            content_hash = compute_content_hash(p)
-                        except Exception:
-                            content_hash = stored_hash
-                else:
-                    existing_row = None
-                    if inode is not None and device is not None:
-                        existing_row = conn.execute(
-                            "SELECT id, content_hash, path FROM files WHERE device=? AND inode=? ORDER BY deleted_at IS NULL DESC LIMIT 1",
-                            (int(device), int(inode)),
-                        ).fetchone()
-                    if existing_row:
-                        fid = row_get(existing_row, "id", fid_guess)
-                        stored_hash = row_get(existing_row, "content_hash", row_get(existing_row, 1))
-                        if stored_hash:
-                            content_hash = stored_hash
-                        else:
-                            try:
-                                content_hash = compute_content_hash(p)
-                            except Exception:
-                                content_hash = None
-                    else:
-                        try:
-                            content_hash = compute_content_hash(p)
-                        except Exception:
-                            content_hash = None
-                        match = find_by_content_hash(conn, content_hash, p) if content_hash else None
-                        if match:
-                            fid = row_get(match, "id", fid_guess)
+                    if not content_hash:
+                        content_hash = row_get(row, "content_hash", row_get(row, 1))
 
-                upsert_file(conn, fid, str(p), st.st_mtime, st.st_size, inode, device, content_hash)
+                upsert_file(conn, fid, path_str, mtime, size, None, None, content_hash)
                 added += 1
                 seen.add(fid)
 
@@ -346,6 +306,9 @@ def sync_and_enqueue(conn):
 
                 if enqueue_job(conn, fid, reason):
                     enq += 1
+        except NextcloudError as exc:
+            print(f"[scan] Nextcloud error for root {root}: {exc}", flush=True)
+            continue
 
     removed = purge_missing(conn, seen)
     conn.commit()

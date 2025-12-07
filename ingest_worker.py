@@ -5,6 +5,7 @@ import importlib
 import json
 import mimetypes
 import os
+import posixpath
 import sqlite3
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
+from nextcloud_client import env_client, NextcloudClient, NextcloudError
 
 from helpers import compute_next_review_at, utcnow_iso
 
@@ -159,8 +161,8 @@ PDF_OCR_DPI          = int(os.environ.get("PDF_OCR_DPI", "300"))
 
 DOCLING_SERVE_URL     = os.environ.get("DOCLING_SERVE_URL", "http://192.168.177.130:5001/v1/convert/file")
 DOCLING_SERVE_TIMEOUT  = float(os.environ.get("DOCLING_SERVE_TIMEOUT", "300"))
-NEXTCLOUD_DOC_DIR      = os.environ.get("NEXTCLOUD_DOC_DIR", "/nextcloud/documents")
-NEXTCLOUD_IMAGE_DIR    = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/nextcloud/docling-images")
+NEXTCLOUD_DOC_DIR      = os.environ.get("NEXTCLOUD_DOC_DIR", "/RAGdocuments")
+NEXTCLOUD_IMAGE_DIR    = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/Ragimages")
 NEXTCLOUD_BASE_URL     = os.environ.get("NEXTCLOUD_BASE_URL", "http://192.168.177.133:8080").rstrip("/")
 NEXTCLOUD_USER         = os.environ.get("NEXTCLOUD_USER", "andreas")
 NEXTCLOUD_TOKEN        = os.environ.get("TOKEN") or os.environ.get("NEXTCLOUD_TOKEN", "")
@@ -170,9 +172,19 @@ DECISION_LOG_MAX_PER_JOB = int(os.environ.get("DECISION_LOG_MAX_PER_JOB", "50"))
 
 WORKER_ID          = f"{os.uname().nodename}-pid{os.getpid()}"
 
+_NEXTCLOUD_CLIENT: NextcloudClient | None = None
+
 def log(msg):
     ts = datetime.utcnow().isoformat(timespec='seconds') + "Z"
     print(f"[worker_id] {ts} {msg}", flush=True)
+
+
+def get_nextcloud_client() -> NextcloudClient:
+    global _NEXTCLOUD_CLIENT
+    if _NEXTCLOUD_CLIENT is None:
+        client = env_client()
+        _NEXTCLOUD_CLIENT = client
+    return _NEXTCLOUD_CLIENT
 
 def log_decision(conn, job_id, file_id, step, detail):
     try:
@@ -367,14 +379,26 @@ class DoclingExtraction:
 
 
 class DoclingServeIngestor:
-    """Interact with docling-serve and persist extracted images locally."""
+    """Interact with docling-serve and persist extracted images."""
 
-    def __init__(self, *, chunk_size: int, chunk_overlap: int, max_chunks: int, service_url: str, image_dir: Path):
+    def __init__(
+        self,
+        *,
+        chunk_size: int,
+        chunk_overlap: int,
+        max_chunks: int,
+        service_url: str,
+        image_dir: Path,
+        nextcloud_client: NextcloudClient | None = None,
+        remote_image_dir: str | None = None,
+    ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.max_chunks = max_chunks
         self.service_url = service_url.rstrip("/")
-        self.image_dir = ensure_dir(Path(image_dir))
+        self.image_dir = ensure_dir(Path(image_dir)) if nextcloud_client is None else Path(image_dir)
+        self.nextcloud_client = nextcloud_client
+        self.remote_image_dir = remote_image_dir or str(image_dir)
 
     def extract(self, file_path: Path) -> DoclingExtraction:
         if not file_path.exists():
@@ -423,17 +447,23 @@ class DoclingServeIngestor:
             ext = self._extension_from_mime(mime) or (Path(name).suffix if name else "") or ".bin"
             fname = name or f"{base_slug}-{idx}{ext if ext.startswith('.') else '.' + ext}"
             target = self.image_dir / fname
+            reference = str(target)
             try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(raw)
+                if self.nextcloud_client:
+                    remote_path = posixpath.normpath(f"/{self.remote_image_dir}/{fname}")
+                    self.nextcloud_client.upload_bytes(remote_path, raw)
+                    reference = remote_path
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(raw)
             except Exception as exc:
                 log(f"[image_store_failed] {target}: {exc}")
                 continue
             stored.append(
                 {
                     "label": fname,
-                    "path": str(target),
-                    "reference": str(target),
+                    "path": reference,
+                    "reference": reference,
                     "mime": mime or mimetypes.guess_type(fname)[0] or "application/octet-stream",
                 }
             )
@@ -497,12 +527,15 @@ _DOCLING_INGESTOR: Optional[DoclingServeIngestor] = None
 def get_docling_ingestor() -> DoclingServeIngestor:
     global _DOCLING_INGESTOR
     if _DOCLING_INGESTOR is None:
+        nxc = get_nextcloud_client()
         _DOCLING_INGESTOR = DoclingServeIngestor(
             chunk_size=MAX_CHARS,
             chunk_overlap=OVERLAP,
             max_chunks=MAX_CHUNKS,
             service_url=DOCLING_SERVE_URL,
-            image_dir=Path(NEXTCLOUD_IMAGE_DIR),
+            image_dir=Path(tempfile.gettempdir()) / "docling-images",
+            nextcloud_client=nxc,
+            remote_image_dir=NEXTCLOUD_IMAGE_DIR,
         )
     return _DOCLING_INGESTOR
 
@@ -754,7 +787,19 @@ def process_one(conn, job_id, file_id):
         finish_error(conn, job_id, file_id, "error_missing_path", "path column missing/empty")
         return
     p = Path(path)
+    temp_file: Path | None = None
     safe_log(conn, job_id, file_id, "path_ok", str(p))
+
+    if not p.exists():
+        try:
+            client = get_nextcloud_client()
+            temp_file = client.download_to_temp(path, suffix=p.suffix)
+            p = temp_file
+            safe_log(conn, job_id, file_id, "downloaded", f"temp={p}")
+        except Exception as exc:
+            update_file_result(conn, file_id, {"accepted": False, "error": "missing_file"})
+            finish_error(conn, job_id, file_id, "error_missing_file", f"{exc}")
+            return
 
     # Snapshot der Gates/ENV
     try:
@@ -778,168 +823,163 @@ def process_one(conn, job_id, file_id):
         finish_error(conn, job_id, file_id, "error_missing_file", "file missing on disk")
         return
 
-    # 3) Text extrahieren via docling-serve (+ PDF-Text-Fallback)
-    size = p.stat().st_size
     try:
+        size = p.stat().st_size
         ingestor = get_docling_ingestor()
-    except DoclingUnavailableError as e:
-        finish_error(conn, job_id, file_id, "error_missing_dependency", str(e))
-        return
 
-    extraction: Optional[DoclingExtraction] = None
-    docling_error: Optional[Exception] = None
-    docling_source = "docling-serve"
-    try:
-        extraction = ingestor.extract(p)
-    except Exception as e:
-        docling_error = e
-
-    if extraction is None and p.suffix.lower() == ".pdf":
-        safe_log(conn, job_id, file_id, "docling_pdf_fallback", str(docling_error))
+        extraction: Optional[DoclingExtraction] = None
+        docling_error: Optional[Exception] = None
+        docling_source = "docling-serve"
         try:
-            fallback_text = legacy_pdf_fallback_text(p)
+            extraction = ingestor.extract(p)
         except Exception as e:
-            fallback_text = ""
-            if docling_error is None:
-                docling_error = e
-        if fallback_text:
-            chunks = ingestor._chunk_text(fallback_text)
-            extraction = DoclingExtraction(
-                text=fallback_text,
-                mime_type="text/plain",
-                chunks=chunks,
-                images=[],
-            )
-            docling_source = "pdf_fallback"
+            docling_error = e
 
-    if extraction is None:
-        update_file_result(
-            conn,
-            file_id,
-            {"accepted": False, "skipped": "extract_failed", "error": str(docling_error)},
-        )
-        finish_error(conn, job_id, file_id, "error_extract_failed", f"docling_failed: {docling_error}")
-        return
+        if extraction is None and p.suffix.lower() == ".pdf":
+            safe_log(conn, job_id, file_id, "docling_pdf_fallback", str(docling_error))
+            try:
+                fallback_text = legacy_pdf_fallback_text(p)
+            except Exception as e:
+                fallback_text = ""
+                if docling_error is None:
+                    docling_error = e
+            if fallback_text:
+                chunks = ingestor._chunk_text(fallback_text)
+                extraction = DoclingExtraction(
+                    text=fallback_text,
+                    mime_type="text/plain",
+                    chunks=chunks,
+                    images=[],
+                )
+                docling_source = "pdf_fallback"
 
-    clean = (extraction.text or "").strip()
-    detected = extraction.mime_type or "docling-serve"
-    log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; size={size}; source={docling_source}")
-    log_decision(
-        conn,
-        job_id,
-        file_id,
-        "extract_ok",
-        f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}",
-    )
-
-    # 4) Zu kurz? -> freundlich beenden
-    if not clean or len(clean) < MIN_CHARS:
-        update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
-        log_decision(conn, job_id, file_id, "threshold", f"skip: too_short chars={len(clean)} < MIN_CHARS={MIN_CHARS}")
-        finish_success(conn, job_id, file_id, "skipped_too_short")
-        return
-
-    # 5) Sehr lange Texte kappen
-    if len(clean) > MAX_TEXT_CHARS:
-        clean = clean[:MAX_TEXT_CHARS]
-        log_decision(conn, job_id, file_id, "threshold", f"cap: truncated to {MAX_TEXT_CHARS} chars")
-
-    # 6) AI-Scoring via Ollama (falls konfiguriert)
-    try:
-        if not OLLAMA_HOST:
-            safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
-            raise RuntimeError("OLLAMA disabled")
-        safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL}")
-        ai = ai_score_text(OLLAMA_HOST, OLLAMA_MODEL, clean, timeout=600, debug=DEBUG, dbg_root=Path("./debug"))
-        is_rel = bool(ai.get("is_relevant"))
-        conf   = float(ai.get("confidence", 0.0))
-        safe_log(conn, job_id, file_id, "score", f"is_rel={is_rel} conf={conf}")
-    except Exception as e:
-        update_file_result(conn, file_id, {"accepted": False, "error": f"ai_scoring_failed: {e}"})
-        finish_error(conn, job_id, file_id, "error_ai_scoring", f"ai_scoring_failed: {e}")
-        return
-
-    # 7) Gate prüfen
-    if not is_rel or conf < RELEVANCE_THRESHOLD:
-        update_file_result(conn, file_id, {"accepted": False, "ai": ai, "reason": "below_threshold", "threshold": RELEVANCE_THRESHOLD})
-        log_decision(conn, job_id, file_id, "threshold", f"skip: is_relevant={is_rel} conf={conf} < RELEVANCE_THRESHOLD={RELEVANCE_THRESHOLD}")
-        finish_success(conn, job_id, file_id, "ai_not_relevant")
-        return
-
-    # 8) Chunking durch docling
-    docling_chunks = extraction.chunks
-    log_decision(
-        conn,
-        job_id,
-        file_id,
-        "chunk_plan",
-        f"chunks={len(docling_chunks)} via docling-serve overlap={OVERLAP}",
-    )
-
-    # 9) Brain-Ingest pro Chunk
-    errors = []
-    for idx, chunk in enumerate(docling_chunks, 1):
-        chunk_meta = {
-            "source": "ct108",
-            "path": str(p),
-            "chunk_index": chunk.meta.get("chunk_index", idx),
-            "chunks_total": len(docling_chunks),
-            "job_id": job_id,
-            "file_id": file_id,
-        }
-        for key in ("page_start", "page_end", "section"):
-            value = chunk.meta.get(key)
-            if value is not None:
-                chunk_meta[key] = value
-        try:
-            if not BRAIN_URL:
-                safe_log(conn, job_id, file_id, "no_brain_url", "BRAIN_URL not set -> skipping POST")
-                raise RuntimeError("Brain URL not configured")
-            safe_log(
+        if extraction is None:
+            update_file_result(
                 conn,
-                job_id,
                 file_id,
-                "pre_brain_post",
-                f"chunk={idx}/{len(docling_chunks)} len={len(chunk.text)} url={BRAIN_URL}",
+                {"accepted": False, "skipped": "extract_failed", "error": str(docling_error)},
             )
-            ok = brain_ingest_text(
-                BRAIN_URL,
-                BRAIN_API_KEY,
-                chunk.text,
-                meta=chunk_meta,
-                chunk_tokens=BRAIN_CHUNK_TOKENS,
-                overlap_tokens=BRAIN_OVERLAP_TOKENS,
-                timeout=BRAIN_REQUEST_TIMEOUT,
-            )
-            if ok:
-                safe_log(conn, job_id, file_id, "brain_ok", f"chunk={idx}")
-            if not ok:
-                errors.append(f"chunk {idx} failed")
+            finish_error(conn, job_id, file_id, "error_extract_failed", f"docling_failed: {docling_error}")
+            return
+
+        clean = (extraction.text or "").strip()
+        detected = extraction.mime_type or "docling-serve"
+        log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; size={size}; source={docling_source}")
+        log_decision(
+            conn,
+            job_id,
+            file_id,
+            "extract_ok",
+            f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}",
+        )
+
+        if not clean or len(clean) < MIN_CHARS:
+            update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
+            log_decision(conn, job_id, file_id, "threshold", f"skip: too_short chars={len(clean)} < MIN_CHARS={MIN_CHARS}")
+            finish_success(conn, job_id, file_id, "skipped_too_short")
+            return
+
+        if len(clean) > MAX_TEXT_CHARS:
+            clean = clean[:MAX_TEXT_CHARS]
+            log_decision(conn, job_id, file_id, "threshold", f"cap: truncated to {MAX_TEXT_CHARS} chars")
+
+        try:
+            if not OLLAMA_HOST:
+                safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
+                raise RuntimeError("OLLAMA disabled")
+            safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL}")
+            ai = ai_score_text(OLLAMA_HOST, OLLAMA_MODEL, clean, timeout=600, debug=DEBUG, dbg_root=Path("./debug"))
+            is_rel = bool(ai.get("is_relevant"))
+            conf   = float(ai.get("confidence", 0.0))
+            safe_log(conn, job_id, file_id, "score", f"is_rel={is_rel} conf={conf}")
         except Exception as e:
-            safe_log(conn, job_id, file_id, "brain_err", f"chunk={idx} err={e}")
-            errors.append(f"chunk {idx} error: {e}")
+            update_file_result(conn, file_id, {"accepted": False, "error": f"ai_scoring_failed: {e}"})
+            finish_error(conn, job_id, file_id, "error_ai_scoring", f"ai_scoring_failed: {e}")
+            return
 
-    # 10) Ergebnis persistieren
-    result = {
-        "accepted": len(errors) == 0,
-        "ai": ai,
-        "chunks": len(docling_chunks),
-        "docling": {
-            "mime": extraction.mime_type,
-            "source": docling_source,
-            "chunks": [chunk.meta for chunk in docling_chunks],
+        if not is_rel or conf < RELEVANCE_THRESHOLD:
+            update_file_result(conn, file_id, {"accepted": False, "ai": ai, "reason": "below_threshold", "threshold": RELEVANCE_THRESHOLD})
+            log_decision(conn, job_id, file_id, "threshold", f"skip: is_relevant={is_rel} conf={conf} < RELEVANCE_THRESHOLD={RELEVANCE_THRESHOLD}")
+            finish_success(conn, job_id, file_id, "ai_not_relevant")
+            return
+
+        docling_chunks = extraction.chunks
+        log_decision(
+            conn,
+            job_id,
+            file_id,
+            "chunk_plan",
+            f"chunks={len(docling_chunks)} via docling-serve overlap={OVERLAP}",
+        )
+
+        errors = []
+        for idx, chunk in enumerate(docling_chunks, 1):
+            chunk_meta = {
+                "source": "ct108",
+                "path": str(p),
+                "chunk_index": chunk.meta.get("chunk_index", idx),
+                "chunks_total": len(docling_chunks),
+                "job_id": job_id,
+                "file_id": file_id,
+            }
+            for key in ("page_start", "page_end", "section"):
+                value = chunk.meta.get(key)
+                if value is not None:
+                    chunk_meta[key] = value
+            try:
+                if not BRAIN_URL:
+                    safe_log(conn, job_id, file_id, "no_brain_url", "BRAIN_URL not set -> skipping POST")
+                    raise RuntimeError("Brain URL not configured")
+                safe_log(
+                    conn,
+                    job_id,
+                    file_id,
+                    "pre_brain_post",
+                    f"chunk={idx}/{len(docling_chunks)} len={len(chunk.text)} url={BRAIN_URL}",
+                )
+                ok = brain_ingest_text(
+                    BRAIN_URL,
+                    BRAIN_API_KEY,
+                    chunk.text,
+                    meta=chunk_meta,
+                    chunk_tokens=BRAIN_CHUNK_TOKENS,
+                    overlap_tokens=BRAIN_OVERLAP_TOKENS,
+                    timeout=BRAIN_REQUEST_TIMEOUT,
+                )
+                if ok:
+                    safe_log(conn, job_id, file_id, "brain_ok", f"chunk={idx}")
+                if not ok:
+                    errors.append(f"chunk {idx} failed")
+            except Exception as e:
+                safe_log(conn, job_id, file_id, "brain_err", f"chunk={idx} err={e}")
+                errors.append(f"chunk {idx} error: {e}")
+
+        result = {
+            "accepted": len(errors) == 0,
+            "ai": ai,
+            "chunks": len(docling_chunks),
+            "docling": {
+                "mime": extraction.mime_type,
+                "source": docling_source,
+                "chunks": [chunk.meta for chunk in docling_chunks],
+                "images": extraction.images,
+            },
             "images": extraction.images,
-        },
-        "images": extraction.images,
-    }
-    if errors:
-        result["errors"] = errors
-        update_file_result(conn, file_id, result)
-        finish_error(conn, job_id, file_id, "error_brain_ingest", "; ".join(errors)[:500])
-        return
+        }
+        if errors:
+            result["errors"] = errors
+            update_file_result(conn, file_id, result)
+            finish_error(conn, job_id, file_id, "error_brain_ingest", "; ".join(errors)[:500])
+            return
 
-    update_file_result(conn, file_id, result)
-    finish_success(conn, job_id, file_id, "vectorized")
+        update_file_result(conn, file_id, result)
+        finish_success(conn, job_id, file_id, "vectorized")
+    finally:
+        if temp_file and temp_file.exists():
+            try:
+                temp_file.unlink()
+            except Exception:
+                pass
 
 
 def main():
