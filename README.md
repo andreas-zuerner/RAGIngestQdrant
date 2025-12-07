@@ -1,6 +1,6 @@
-# BrainScanDocs
+# RAGIngestQdrant
 
-BrainScanDocs durchsucht konfigurierbare Verzeichnisse, legt gefundene Dokumente in
+RAGIngestQdrant durchsucht konfigurierbare Verzeichnisse, legt gefundene Dokumente in
 einer SQLite-Datenbank ab und lässt relevante Inhalte über einen externen
 "Brain"-Dienst auswerten. Ein Ollama-Endpoint bewertet die Relevanz einzelner
 Texte, bevor sie zur Persistierung weitergereicht werden.
