@@ -20,6 +20,9 @@ FOLLOW_SYMLINKS = os.environ.get("FOLLOW_SYMLINKS", "0") == "1"
 MAX_JOBS_PER_PASS = int(os.environ.get("MAX_JOBS_PER_PASS", "5"))
 SLEEP_SECS = int(os.environ.get("SLEEP_SECS", "10"))
 WORKER_STOP_TIMEOUT = int(os.environ.get("WORKER_STOP_TIMEOUT", "20"))
+NEXTCLOUD_BASE_URL = os.environ.get("NEXTCLOUD_BASE_URL", "http://192.168.177.133:8080").rstrip("/")
+NEXTCLOUD_USER = os.environ.get("NEXTCLOUD_USER", "andreas")
+NEXTCLOUD_TOKEN = os.environ.get("TOKEN") or os.environ.get("NEXTCLOUD_TOKEN", "")
 
 HIGH_PRIORITY_NEW = 100
 RETRY_PRIORITY_ERROR = 90
