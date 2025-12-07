@@ -1,9 +1,9 @@
 
 #!/usr/bin/env python3
-import html
+import base64
 import importlib
-import inspect
 import json
+import mimetypes
 import os
 import sqlite3
 import subprocess
@@ -12,12 +12,10 @@ import tempfile
 import time
 import traceback
 import unicodedata
-import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from xml.etree import ElementTree as ET
 
 import requests
 
@@ -28,33 +26,8 @@ class DoclingUnavailableError(RuntimeError):
     """Raised when docling is missing at runtime."""
 
 
-DOCLING_AVAILABLE = True
 TEXT_FALLBACK_EXTENSIONS = {".txt", ".text"}
 ODF_FALLBACK_EXTENSIONS = {".odt", ".ods", ".odp", ".odg", ".odf", ".odm"}
-
-try:  # pragma: no cover - import-time wiring
-    from docling.document_converter import DocumentConverter
-
-    try:
-        from docling.pipeline.standard_pipeline import StandardPipelineConfig
-    except Exception:  # pragma: no cover - optional config module
-        StandardPipelineConfig = None
-
-    try:
-        from docling.chunking import HybridChunker, HybridChunkerConfig
-    except Exception:  # pragma: no cover - optional chunking module
-        HybridChunker = None
-        HybridChunkerConfig = None
-
-except Exception as exc:  # pragma: no cover - executed only without docling
-    DocumentConverter = None
-    StandardPipelineConfig = None
-    HybridChunker = None
-    HybridChunkerConfig = None
-    DOCLING_AVAILABLE = False
-    DOCLING_IMPORT_ERROR = exc
-else:
-    DOCLING_IMPORT_ERROR = None
 
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
@@ -162,27 +135,32 @@ def safe_log(conn, job_id, file_id, step, detail):
 
 
 # === Config (ENV) ===
-DB_PATH            = os.environ.get("DB_PATH", "DocumentDatabase/state.db")
-BRAIN_URL          = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
-BRAIN_API_KEY      = os.environ.get("BRAIN_API_KEY", "change-me")
-BRAIN_CHUNK_TOKENS = int(os.environ.get("BRAIN_CHUNK_TOKENS", "400"))
+DB_PATH              = os.environ.get("DB_PATH", "DocumentDatabase/state.db")
+BRAIN_URL            = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
+BRAIN_API_KEY        = os.environ.get("BRAIN_API_KEY", "change-me")
+BRAIN_CHUNK_TOKENS   = int(os.environ.get("BRAIN_CHUNK_TOKENS", "400"))
 BRAIN_OVERLAP_TOKENS = int(os.environ.get("BRAIN_OVERLAP_TOKENS", "80"))
 BRAIN_REQUEST_TIMEOUT = float(os.environ.get("BRAIN_REQUEST_TIMEOUT", "120"))
-OLLAMA_HOST        = os.environ.get("OLLAMA_HOST", "http://192.168.177.130:11434")
-OLLAMA_MODEL       = os.environ.get("OLLAMA_MODEL", "mistral-small3.2:latest")
-RELEVANCE_THRESHOLD= float(os.environ.get("RELEVANCE_THRESHOLD", "0.55"))
-MIN_CHARS          = int(os.environ.get("MIN_CHARS", "200"))
-MAX_TEXT_CHARS     = int(os.environ.get("MAX_TEXT_CHARS", "100000"))
-MAX_CHARS          = int(os.environ.get("MAX_CHARS", "4000"))
-OVERLAP            = int(os.environ.get("OVERLAP", "400"))
-MAX_CHUNKS         = int(os.environ.get("MAX_CHUNKS", "200"))
-ENABLE_OCR         = os.environ.get("ENABLE_OCR", "0") == "1"
-DEBUG              = os.environ.get("DEBUG", "0") == "1"
-LOCK_TIMEOUT_S     = int(os.environ.get("LOCK_TIMEOUT_S", "600"))
-IDLE_SLEEP_S       = float(os.environ.get("IDLE_SLEEP_S", "1.0"))
-PDFTOTEXT_TIMEOUT_S = int(os.environ.get("PDFTOTEXT_TIMEOUT_S", "60"))
-PDF_OCR_MAX_PAGES   = int(os.environ.get("PDF_OCR_MAX_PAGES", "20"))
-PDF_OCR_DPI         = int(os.environ.get("PDF_OCR_DPI", "300"))
+OLLAMA_HOST          = os.environ.get("OLLAMA_HOST", "http://192.168.177.130:11434")
+OLLAMA_MODEL         = os.environ.get("OLLAMA_MODEL", "mistral-small3.2:latest")
+RELEVANCE_THRESHOLD  = float(os.environ.get("RELEVANCE_THRESHOLD", "0.55"))
+MIN_CHARS            = int(os.environ.get("MIN_CHARS", "200"))
+MAX_TEXT_CHARS       = int(os.environ.get("MAX_TEXT_CHARS", "100000"))
+MAX_CHARS            = int(os.environ.get("MAX_CHARS", "4000"))
+OVERLAP              = int(os.environ.get("OVERLAP", "400"))
+MAX_CHUNKS           = int(os.environ.get("MAX_CHUNKS", "200"))
+ENABLE_OCR           = os.environ.get("ENABLE_OCR", "0") == "1"
+DEBUG                = os.environ.get("DEBUG", "0") == "1"
+LOCK_TIMEOUT_S       = int(os.environ.get("LOCK_TIMEOUT_S", "600"))
+IDLE_SLEEP_S         = float(os.environ.get("IDLE_SLEEP_S", "1.0"))
+PDFTOTEXT_TIMEOUT_S  = int(os.environ.get("PDFTOTEXT_TIMEOUT_S", "60"))
+PDF_OCR_MAX_PAGES    = int(os.environ.get("PDF_OCR_MAX_PAGES", "20"))
+PDF_OCR_DPI          = int(os.environ.get("PDF_OCR_DPI", "300"))
+
+DOCLING_SERVE_URL     = os.environ.get("DOCLING_SERVE_URL", "http://192.168.177.130:5001/v1/convert/file")
+DOCLING_SERVE_TIMEOUT  = float(os.environ.get("DOCLING_SERVE_TIMEOUT", "300"))
+NEXTCLOUD_DOC_DIR      = os.environ.get("NEXTCLOUD_DOC_DIR", "/nextcloud/documents")
+NEXTCLOUD_IMAGE_DIR    = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/nextcloud/docling-images")
 
 DECISION_LOG_ENABLED  = os.environ.get("DECISION_LOG_ENABLED", "1") == "1"
 DECISION_LOG_MAX_PER_JOB = int(os.environ.get("DECISION_LOG_MAX_PER_JOB", "50"))
@@ -382,352 +360,146 @@ class DoclingExtraction:
     text: str
     mime_type: Optional[str]
     chunks: List[DoclingChunk]
+    images: List[Dict[str, object]]
 
 
-class DoclingIngestor:
-    """Wrapper around docling's converter and hybrid chunker."""
+class DoclingServeIngestor:
+    """Interact with docling-serve and persist extracted images locally."""
 
-    def __init__(self, *, enable_ocr: bool, chunk_size: int, chunk_overlap: int, max_chunks: int):
-        if not DOCLING_AVAILABLE:
-            raise DoclingUnavailableError(
-                "docling is not installed or provides an incompatible API. Install or upgrade it via 'pip install docling' to run the ingest worker"
-                + (f" (import error: {DOCLING_IMPORT_ERROR})" if DOCLING_IMPORT_ERROR else "")
-            )
+    def __init__(self, *, chunk_size: int, chunk_overlap: int, max_chunks: int, service_url: str, image_dir: Path):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.max_chunks = max_chunks
-        self.converter = self._build_converter(enable_ocr)
-        self.chunker = self._build_chunker(chunk_size, chunk_overlap)
-
-    def _build_converter(self, enable_ocr: bool):
-        if StandardPipelineConfig is None:
-            return DocumentConverter()
-        config = StandardPipelineConfig()
-        for attr in ("enable_image_ocr", "enable_ocr"):
-            if hasattr(config, attr):
-                setattr(config, attr, bool(enable_ocr))
-        try:
-            return DocumentConverter(pipeline_config=config)
-        except TypeError:
-            return DocumentConverter()
-
-    def _build_chunker(self, chunk_size: int, chunk_overlap: int):
-        if HybridChunker is None:
-            return None
-        cfg = None
-        if HybridChunkerConfig is not None:
-            cfg_kwargs = {}
-            try:
-                sig = inspect.signature(HybridChunkerConfig)
-                if "chunk_size" in sig.parameters:
-                    cfg_kwargs["chunk_size"] = chunk_size
-                if "chunk_overlap" in sig.parameters:
-                    cfg_kwargs["chunk_overlap"] = chunk_overlap
-                if "overlap" in sig.parameters and "chunk_overlap" not in cfg_kwargs:
-                    cfg_kwargs["overlap"] = chunk_overlap
-                if "max_chunks" in sig.parameters:
-                    cfg_kwargs["max_chunks"] = self.max_chunks
-            except (TypeError, ValueError):
-                cfg_kwargs = {}
-            try:
-                cfg = HybridChunkerConfig(**cfg_kwargs)
-            except Exception:
-                cfg = None
-        try:
-            return HybridChunker(cfg) if cfg is not None else HybridChunker()
-        except Exception:
-            return None
-            
-    def _normalize_word_template(self, file_path: Path, suffix: str) -> Optional[Path]:
-        if suffix not in {".dotm", ".dotx"}:
-            return None
-
-        try:
-            with zipfile.ZipFile(file_path, "r") as zin:
-                if "[Content_Types].xml" not in zin.namelist():
-                    return None
-
-                content_types = zin.read("[Content_Types].xml")
-                replacements = (
-                    (
-                        b"application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
-                        b"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
-                    ),
-                    (
-                        b"application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
-                        b"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
-                    ),
-                )
-                new_content = content_types
-                changed = False
-                for old, new in replacements:
-                    if old in new_content:
-                        new_content = new_content.replace(old, new)
-                        changed = True
-
-                if not changed:
-                    return None
-
-                tmp_dir = ensure_dir(Path(tempfile.gettempdir()) / "brain-docling-word")
-                tmp_path = tmp_dir / f"{slugify(file_path.stem)}.docx"
-
-                with zipfile.ZipFile(tmp_path, "w") as zout:
-                    for item in zin.infolist():
-                        data = zin.read(item.filename)
-                        if item.filename == "[Content_Types].xml":
-                            data = new_content
-                        zout.writestr(item, data)
-
-                return tmp_path
-        except Exception:
-            return None
+        self.service_url = service_url.rstrip("/")
+        self.image_dir = ensure_dir(Path(image_dir))
 
     def extract(self, file_path: Path) -> DoclingExtraction:
         if not file_path.exists():
             raise FileNotFoundError(file_path)
-        input_obj = self._build_conversion_input(file_path)
-        result = self.converter.convert(input_obj)
-        document = (
-            getattr(result, "document", None)
-            or getattr(result, "output_document", None)
-            or getattr(result, "output", None)
-        )
-        if document is None:
-            raise RuntimeError("docling returned no document")
-        mime = getattr(result, "media_type", None) or getattr(document, "media_type", None)
-        return self._build_extraction(document, mime)
 
-    def extract_markdown(self, markdown_text: str, *, original_name: str = "doc.md") -> DoclingExtraction:
-        if not markdown_text or not markdown_text.strip():
-            raise RuntimeError("markdown text for docling fallback is empty")
-        tmp_dir = ensure_dir(Path(tempfile.gettempdir()) / "brain-docling-markdown")
-        tmp_path = tmp_dir / f"{slugify(original_name)}.md"
-        tmp_path.write_text(markdown_text, encoding="utf-8")
-        result = self.converter.convert(str(tmp_path))
-        document = (
-            getattr(result, "document", None)
-            or getattr(result, "output_document", None)
-            or getattr(result, "output", None)
-        )
-        if document is None:
-            raise RuntimeError("docling returned no document from markdown fallback")
-        mime = getattr(result, "media_type", None) or getattr(document, "media_type", None) or "text/markdown"
-        return self._build_extraction(document, mime)
+        files = {"file": (file_path.name, file_path.open("rb"), "application/octet-stream")}
+        try:
+            response = requests.post(self.service_url, files=files, timeout=DOCLING_SERVE_TIMEOUT)
+            response.raise_for_status()
+        except Exception as exc:
+            raise DoclingUnavailableError(f"docling-serve request failed: {exc}") from exc
 
-    def _build_extraction(self, document, mime: Optional[str]) -> DoclingExtraction:
-        chunks = self._chunk_document(document)
-        if not chunks:
-            doc_text = self._document_to_text(document)
-            if not doc_text.strip():
-                raise RuntimeError("docling produced no textual output")
-            chunk = DoclingChunk(text=doc_text, meta={"chunk_index": 1})
-            return DoclingExtraction(text=doc_text, mime_type=mime, chunks=[chunk])
+        payload = response.json()
+        text = self._extract_text(payload)
+        images_payload = payload.get("images") or payload.get("media", {}).get("images") or []
+        stored_images = self._store_images(images_payload, slugify(file_path.stem))
+        text_with_refs = self._inject_image_refs(text, stored_images)
+        mime = payload.get("media_type") or payload.get("mime_type")
+        chunks = self._chunk_text(text_with_refs)
+        return DoclingExtraction(text=text_with_refs, mime_type=mime, chunks=chunks, images=stored_images)
 
-        processed: List[DoclingChunk] = []
-        for idx, chunk in enumerate(chunks, start=1):
-            if self.max_chunks and idx > self.max_chunks:
-                break
-            chunk_text = self._chunk_to_text(chunk)
-            if not chunk_text or not chunk_text.strip():
+    def _extract_text(self, payload: Dict[str, object]) -> str:
+        for key in ("text", "markdown", "content", "body"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        raise RuntimeError("docling-serve response did not contain textual content")
+
+    def _store_images(self, images_payload, base_slug: str) -> List[Dict[str, object]]:
+        stored: List[Dict[str, object]] = []
+        if not images_payload:
+            return stored
+
+        items = images_payload
+        if isinstance(images_payload, dict):
+            items = [{"name": name, "data": data} for name, data in images_payload.items()]
+
+        for idx, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
                 continue
-            meta = {"chunk_index": idx}
-            meta.update(self._page_hint(chunk))
-            processed.append(DoclingChunk(text=chunk_text, meta=meta))
+            raw = self._decode_data(item.get("data") or item.get("content") or item.get("base64") or item.get("payload") or item.get("value"))
+            if raw is None:
+                continue
+            name = item.get("name") or item.get("id")
+            mime = item.get("mime") or item.get("content_type") or item.get("type")
+            ext = self._extension_from_mime(mime) or (Path(name).suffix if name else "") or ".bin"
+            fname = name or f"{base_slug}-{idx}{ext if ext.startswith('.') else '.' + ext}"
+            target = self.image_dir / fname
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(raw)
+            except Exception as exc:
+                log(f"[image_store_failed] {target}: {exc}")
+                continue
+            stored.append(
+                {
+                    "label": fname,
+                    "path": str(target),
+                    "reference": str(target),
+                    "mime": mime or mimetypes.guess_type(fname)[0] or "application/octet-stream",
+                }
+            )
+        return stored
 
-        if not processed:
-            doc_text = self._document_to_text(document)
-            if not doc_text.strip():
-                raise RuntimeError("docling produced empty chunks")
-            processed.append(DoclingChunk(text=doc_text, meta={"chunk_index": 1}))
-
-        combined_text = self._document_to_text(document, processed)
-        if not combined_text.strip():
-            combined_text = "\n\n".join(chunk.text for chunk in processed)
-
-        return DoclingExtraction(text=combined_text, mime_type=mime, chunks=processed)
-
-    def _build_conversion_input(self, file_path: Path):
-        """
-        Build a Docling conversion input for the given file path.
-
-        With newer Docling versions, `DocumentConverter.convert` typically
-        accepts a path (string or Path) directly.
-        For text and ODF files we first wrap/convert to HTML and write
-        a temporary .html file, then pass its path to Docling.
-        """
-        suffix = file_path.suffix.lower()
-
-        # Normalize Word templates (.dotm/.dotx) to plain .docx by adjusting
-        # the content type. The python-docx dependency used by docling rejects
-        # the macro/template content types, even though the payload is
-        # otherwise compatible with DOCX. We rewrite the Content_Types entry
-        # into a temporary copy so docling can ingest the document.
-        normalized_word = self._normalize_word_template(file_path, suffix)
-        if normalized_word is not None:
-            return str(normalized_word)
-        
-        if suffix in TEXT_FALLBACK_EXTENSIONS:
-            html_text = self._wrap_plain_text_html(file_path)
-            if html_text:
-                return self._input_from_html(html_text, original_name=file_path.name)
-        if suffix in ODF_FALLBACK_EXTENSIONS:
-            html_text = self._odf_to_html(file_path)
-            if html_text:
-                return self._input_from_html(html_text, original_name=file_path.name)
-        # Standard-Fall: Originaldatei als Quelle verwenden
-        return str(file_path)
-
-    def _input_from_html(self, html_text: str, *, original_name: str):
-        """
-        Writes the given HTML into a temporary file and returns its path
-        as a string. This path can be passed directly to Docling's
-        DocumentConverter.convert().
-        """
-        if not html_text:
+    def _decode_data(self, data: Optional[str]) -> Optional[bytes]:
+        if not data:
             return None
-        html_text = html_text if isinstance(html_text, str) else str(html_text)
-        tmp_dir = ensure_dir(Path(tempfile.gettempdir()) / "brain-docling-html")
-        tmp_name = f"{slugify(original_name)}.html"
-        tmp_path = tmp_dir / tmp_name
-        tmp_path.write_text(html_text, encoding="utf-8")
-        return str(tmp_path)
-
-    def _wrap_plain_text_html(self, file_path: Path) -> str:
+        if isinstance(data, bytes):
+            return data
         try:
-            text = file_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            text = file_path.read_text(encoding="utf-8", errors="ignore")
+            if data.startswith("data:"):
+                _, _, b64_part = data.partition(",")
+                return base64.b64decode(b64_part)
+            return base64.b64decode(data)
         except Exception:
-            return ""
-        escaped = html.escape(text)
-        return f"<html><body><pre>{escaped}</pre></body></html>"
+            return None
 
-    def _odf_to_html(self, file_path: Path) -> str:
-        try:
-            with zipfile.ZipFile(file_path) as zf:
-                content = zf.read("content.xml")
-        except Exception:
+    def _extension_from_mime(self, mime: Optional[str]) -> str:
+        if not mime:
             return ""
-        try:
-            root = ET.fromstring(content)
-        except Exception:
-            return ""
-        paragraphs: List[str] = []
-        for elem in root.iter():
-            local = elem.tag.split("}")[-1]
-            if local.lower() in {"p", "h", "h1", "h2", "h3", "h4", "h5", "h6", "title"}:
-                text = "".join(elem.itertext()).strip()
-                if text:
-                    paragraphs.append(f"<p>{html.escape(text)}</p>")
-        if not paragraphs:
-            fallback = "".join(root.itertext()).strip()
-            if fallback:
-                paragraphs.append(f"<p>{html.escape(fallback)}</p>")
-        if not paragraphs:
-            return ""
-        body = "\n".join(paragraphs)
-        return f"<html><body>{body}</body></html>"
+        ext = mimetypes.guess_extension(mime)
+        return ext or ""
 
-    def _chunk_document(self, document):
-        if self.chunker is None:
-            return self._fallback_chunk_document(document)
-        chunk_method = getattr(self.chunker, "chunk", None) or getattr(self.chunker, "chunk_document", None)
-        if not callable(chunk_method):
-            return self._fallback_chunk_document(document)
-        try:
-            chunks = chunk_method(document)
-            if chunks:
-                return chunks
-        except Exception:
-            pass
-        return self._fallback_chunk_document(document)
+    def _inject_image_refs(self, text: str, images: List[Dict[str, object]]) -> str:
+        if not images:
+            return text or ""
+        base = (text or "").rstrip()
+        lines = [base] if base else []
+        lines.append("")
+        lines.append("## Extracted images")
+        for img in images:
+            label = img.get("label", "image")
+            ref = img.get("reference", "")
+            lines.append(f"![{label}]({ref})")
+        return "\n".join(lines).strip()
 
-    def _fallback_chunk_document(self, document) -> List[DoclingChunk]:
-        text = self._document_to_text(document)
-        if not text:
-            return []
+    def _chunk_text(self, text: str) -> List[DoclingChunk]:
         chunks: List[DoclingChunk] = []
+        if not text:
+            return chunks
         step = max(self.chunk_size - self.chunk_overlap, 1)
-        idx = 0
-        for start in range(0, len(text), step):
-            if self.max_chunks and idx >= self.max_chunks:
+        for idx, start in enumerate(range(0, len(text), step), start=1):
+            if self.max_chunks and idx > self.max_chunks:
                 break
             end = min(start + self.chunk_size, len(text))
             chunk_text = text[start:end].strip()
             if not chunk_text:
                 continue
-            idx += 1
             chunks.append(DoclingChunk(text=chunk_text, meta={"chunk_index": idx}))
             if end >= len(text):
                 break
+        if not chunks and text.strip():
+            chunks.append(DoclingChunk(text=text.strip(), meta={"chunk_index": 1}))
         return chunks
 
-    def _chunk_to_text(self, chunk) -> str:
-        for attr in ("text", "content"):
-            value = getattr(chunk, attr, None)
-            if isinstance(value, str):
-                return value
-            if callable(value):
-                try:
-                    out = value()
-                    if isinstance(out, str):
-                        return out
-                except Exception:
-                    continue
-        if hasattr(chunk, "to_text"):
-            try:
-                out = chunk.to_text()
-                if isinstance(out, str):
-                    return out
-            except Exception:
-                pass
-        return str(chunk)
 
-    def _page_hint(self, chunk) -> Dict[str, object]:
-        hint: Dict[str, object] = {}
-        page_span = getattr(chunk, "page_span", None)
-        if page_span:
-            for key in ("start", "start_page", "start_page_number"):
-                value = getattr(page_span, key, None)
-                if isinstance(value, int):
-                    hint.setdefault("page_start", value)
-                    break
-            for key in ("end", "end_page", "end_page_number"):
-                value = getattr(page_span, key, None)
-                if isinstance(value, int):
-                    hint.setdefault("page_end", value)
-                    break
-        section = getattr(chunk, "section", None)
-        if isinstance(section, str) and section.strip():
-            hint["section"] = section.strip()
-        return hint
-
-    def _document_to_text(self, document, chunks: Optional[List[DoclingChunk]] = None) -> str:
-        for attr in ("export_text", "export_to_text", "to_text", "get_text"):
-            func = getattr(document, attr, None)
-            if callable(func):
-                try:
-                    text = func()
-                    if isinstance(text, str) and text.strip():
-                        return text
-                except Exception:
-                    continue
-        if chunks:
-            return "\n\n".join(chunk.text for chunk in chunks)
-        return ""
+_DOCLING_INGESTOR: Optional[DoclingServeIngestor] = None
 
 
-_DOCLING_INGESTOR: Optional[DoclingIngestor] = None
-
-
-def get_docling_ingestor() -> DoclingIngestor:
+def get_docling_ingestor() -> DoclingServeIngestor:
     global _DOCLING_INGESTOR
     if _DOCLING_INGESTOR is None:
-        _DOCLING_INGESTOR = DoclingIngestor(
-            enable_ocr=ENABLE_OCR,
+        _DOCLING_INGESTOR = DoclingServeIngestor(
             chunk_size=MAX_CHARS,
             chunk_overlap=OVERLAP,
             max_chunks=MAX_CHUNKS,
+            service_url=DOCLING_SERVE_URL,
+            image_dir=Path(NEXTCLOUD_IMAGE_DIR),
         )
     return _DOCLING_INGESTOR
 
@@ -1003,7 +775,7 @@ def process_one(conn, job_id, file_id):
         finish_error(conn, job_id, file_id, "error_missing_file", "file missing on disk")
         return
 
-    # 3) Text extrahieren via docling (+ PDF-OCR-Fallback)
+    # 3) Text extrahieren via docling-serve (+ PDF-Text-Fallback)
     size = p.stat().st_size
     try:
         ingestor = get_docling_ingestor()
@@ -1013,7 +785,7 @@ def process_one(conn, job_id, file_id):
 
     extraction: Optional[DoclingExtraction] = None
     docling_error: Optional[Exception] = None
-    docling_source = "docling"
+    docling_source = "docling-serve"
     try:
         extraction = ingestor.extract(p)
     except Exception as e:
@@ -1023,41 +795,19 @@ def process_one(conn, job_id, file_id):
         safe_log(conn, job_id, file_id, "docling_pdf_fallback", str(docling_error))
         try:
             fallback_text = legacy_pdf_fallback_text(p)
-            if not fallback_text.strip():
-                raise RuntimeError("legacy_pdf_fallback produced no text")
-            try:
-                extraction = ingestor.extract_markdown(fallback_text, original_name=p.name)
-                docling_source = "pdf_ocr_fallback"
-                log_decision(
-                    conn,
-                    job_id,
-                    file_id,
-                    "docling_fallback",
-                    f"pdf_ocr_fallback len={len(fallback_text)} original_error={docling_error}",
-                )
-            except Exception as markdown_error:
-                # If Docling cannot process the markdown fallback, fall back to a
-                # minimal extraction that bypasses Docling entirely so that we
-                # can still ingest text obtained via pdftotext/ocr.
-                chunk = DoclingChunk(text=fallback_text, meta={"chunk_index": 1})
-                extraction = DoclingExtraction(
-                    text=fallback_text,
-                    mime_type="text/plain",
-                    chunks=[chunk],
-                )
-                docling_source = "pdf_text_fallback"
-                log_decision(
-                    conn,
-                    job_id,
-                    file_id,
-                    "docling_fallback",
-                    f"pdf_text_fallback len={len(fallback_text)} original_error={docling_error}; markdown_error={markdown_error}",
-                )
         except Exception as e:
+            fallback_text = ""
             if docling_error is None:
                 docling_error = e
-            else:
-                docling_error = RuntimeError(f"{docling_error}; pdf_fallback_failed: {e}")
+        if fallback_text:
+            chunks = ingestor._chunk_text(fallback_text)
+            extraction = DoclingExtraction(
+                text=fallback_text,
+                mime_type="text/plain",
+                chunks=chunks,
+                images=[],
+            )
+            docling_source = "pdf_fallback"
 
     if extraction is None:
         update_file_result(
@@ -1069,7 +819,7 @@ def process_one(conn, job_id, file_id):
         return
 
     clean = (extraction.text or "").strip()
-    detected = extraction.mime_type or "docling"
+    detected = extraction.mime_type or "docling-serve"
     log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; size={size}; source={docling_source}")
     log_decision(
         conn,
@@ -1120,7 +870,7 @@ def process_one(conn, job_id, file_id):
         job_id,
         file_id,
         "chunk_plan",
-        f"chunks={len(docling_chunks)} via docling hybrid overlap={OVERLAP}",
+        f"chunks={len(docling_chunks)} via docling-serve overlap={OVERLAP}",
     )
 
     # 9) Brain-Ingest pro Chunk
@@ -1175,7 +925,9 @@ def process_one(conn, job_id, file_id):
             "mime": extraction.mime_type,
             "source": docling_source,
             "chunks": [chunk.meta for chunk in docling_chunks],
+            "images": extraction.images,
         },
+        "images": extraction.images,
     }
     if errors:
         result["errors"] = errors

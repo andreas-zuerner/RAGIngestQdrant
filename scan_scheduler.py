@@ -12,7 +12,9 @@ from typing import Set
 from helpers import init_conn, compute_file_id, is_due
 
 DB_PATH = os.environ.get("DB_PATH", "DocumentDatabase/state.db")
-ROOT_DIRS = [p for p in os.environ.get("ROOT_DIRS", "ct109-data/scan_root").split(",") if p]
+NEXTCLOUD_DOC_DIR = os.environ.get("NEXTCLOUD_DOC_DIR", "/nextcloud/documents")
+NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/nextcloud/docling-images")
+ROOT_DIRS = [p for p in os.environ.get("ROOT_DIRS", f"{NEXTCLOUD_DOC_DIR},{NEXTCLOUD_IMAGE_DIR}").split(",") if p]
 EXCLUDE_GLOBS = [g for g in os.environ.get("EXCLUDE_GLOBS", "").split(",") if g]
 FOLLOW_SYMLINKS = os.environ.get("FOLLOW_SYMLINKS", "0") == "1"
 MAX_JOBS_PER_PASS = int(os.environ.get("MAX_JOBS_PER_PASS", "5"))
