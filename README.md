@@ -66,6 +66,10 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
   `ROOT_DIRS` (kommagetrennt) überschreiben. Der Bilder-Ordner wird von der
   SQLite-Datenbank genauso überwacht wie der Dokument-Ordner und kann dadurch
   bequem mit einer Admin-Oberfläche wie phpLiteAdmin gepflegt werden.
+* Die Nextcloud-Instanz ist über `http://192.168.177.133:8080` erreichbar. Der
+  Standardbenutzer lautet `andreas`; der dazugehörige API-Token wird in
+  `.env.local` unter `TOKEN` (optional auch `NEXTCLOUD_TOKEN`) hinterlegt und
+  beim Starten des Scans automatisch als Umgebungsvariable geladen.
 * Für die Textextraktion wird kein lokales `docling` mehr benötigt. Stattdessen
   spricht der Worker den bereitgestellten Webservice
   `docling-serve` unter `DOCLING_SERVE_URL` (Default

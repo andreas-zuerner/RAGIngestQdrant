@@ -161,6 +161,9 @@ DOCLING_SERVE_URL     = os.environ.get("DOCLING_SERVE_URL", "http://192.168.177.
 DOCLING_SERVE_TIMEOUT  = float(os.environ.get("DOCLING_SERVE_TIMEOUT", "300"))
 NEXTCLOUD_DOC_DIR      = os.environ.get("NEXTCLOUD_DOC_DIR", "/nextcloud/documents")
 NEXTCLOUD_IMAGE_DIR    = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/nextcloud/docling-images")
+NEXTCLOUD_BASE_URL     = os.environ.get("NEXTCLOUD_BASE_URL", "http://192.168.177.133:8080").rstrip("/")
+NEXTCLOUD_USER         = os.environ.get("NEXTCLOUD_USER", "andreas")
+NEXTCLOUD_TOKEN        = os.environ.get("TOKEN") or os.environ.get("NEXTCLOUD_TOKEN", "")
 
 DECISION_LOG_ENABLED  = os.environ.get("DECISION_LOG_ENABLED", "1") == "1"
 DECISION_LOG_MAX_PER_JOB = int(os.environ.get("DECISION_LOG_MAX_PER_JOB", "50"))
