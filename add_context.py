@@ -110,8 +110,9 @@ def add_context_to_chunks(
     ollama_host: str,
     model: str,
     timeout: float = 120.0,
+    debug: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    chunks = [ChunkItem(chunk_id=i.get("chunk_id", idx + 1), start=i.get("start"), end=i.get("end"), content=i.get("content") or i.get("text") or "", fullText=i.get("fullText"), fileName=i.get("fileName") or i.get("filename"), filePath=i.get("filePath") or i.get("filepath"), debug=i.get("debug")) for idx, i in enumerate(items)]
+    chunks = [ChunkItem(chunk_id=i.get("chunk_id", idx + 1), start=i.get("start"), end=i.get("end"), content=i.get("content") or i.get("text") or "", fullText=i.get("fullText"), fileName=i.get("fileName") or i.get("filename"), filePath=i.get("filePath") or i.get("filepath"), debug=i.get("debug", debug)) for idx, i in enumerate(items)]
 
     if not chunks:
         return []
@@ -200,6 +201,7 @@ def enrich_chunks_with_context(
     ollama_host: str,
     model: str,
     timeout: float = 120.0,
+    debug: Optional[Any] = None,
 ) -> List[str]:
     items = [
         {
@@ -208,9 +210,10 @@ def enrich_chunks_with_context(
             "end": None,
             "content": chunk,
             "fullText": document,
+            "debug": debug,
         }
         for idx, chunk in enumerate(chunks)
     ]
 
-    enriched_items = add_context_to_chunks(items, ollama_host=ollama_host, model=model, timeout=timeout)
+    enriched_items = add_context_to_chunks(items, ollama_host=ollama_host, model=model, timeout=timeout, debug=debug)
     return [item.get("text", "") for item in enriched_items]
