@@ -412,6 +412,10 @@ class DoclingServeIngestor:
         try:
             response = requests.post(self.service_url, files=files, timeout=DOCLING_SERVE_TIMEOUT)
             response.raise_for_status()
+        except requests.HTTPError as exc:
+            detail = self._response_detail(exc.response)
+            suffix = f"; {detail}" if detail else ""
+            raise DoclingUnavailableError(f"docling-serve request failed: {exc}{suffix}") from exc
         except Exception as exc:
             raise DoclingUnavailableError(f"docling-serve request failed: {exc}") from exc
 
@@ -524,6 +528,28 @@ class DoclingServeIngestor:
         if not chunks and text.strip():
             chunks.append(DoclingChunk(text=text.strip(), meta={"chunk_index": 1}))
         return chunks
+
+    def _response_detail(self, response: Optional[requests.Response]) -> str:
+        if response is None:
+            return ""
+
+        detail: str = ""
+        try:
+            parsed = response.json()
+            if isinstance(parsed, dict):
+                detail = str(parsed.get("detail") or parsed.get("error") or parsed)
+            else:
+                detail = str(parsed)
+        except Exception:
+            try:
+                detail = response.text
+            except Exception:
+                detail = ""
+
+        detail = (detail or "").strip()
+        if len(detail) > 500:
+            detail = detail[:500] + "…"
+        return detail
 
 
 _DOCLING_INGESTOR: Optional[DoclingServeIngestor] = None
