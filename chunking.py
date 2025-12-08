@@ -8,6 +8,10 @@ import requests
 class ChunkingError(RuntimeError):
     """Raised when LLM-based chunking fails."""
 
+    def __init__(self, message: str, *, raw_response: str | None = None):
+        super().__init__(message)
+        self.raw_response = raw_response
+
 
 def _approx_chars(token_count: int) -> int:
     return max(token_count * 4, 1)
@@ -32,7 +36,7 @@ def _parse_chunk_payload(raw: str) -> List[str]:
     try:
         parsed = json.loads(raw)
     except Exception as exc:  # noqa: BLE001
-        raise ChunkingError(f"could not parse chunk JSON: {exc}") from exc
+        raise ChunkingError(f"could not parse chunk JSON: {exc}", raw_response=raw) from exc
 
     if isinstance(parsed, list):
         texts: List[str] = []
@@ -47,7 +51,9 @@ def _parse_chunk_payload(raw: str) -> List[str]:
                 texts.append(candidate)
         if texts:
             return texts
-    raise ChunkingError("chunk response did not contain any text chunks")
+    raise ChunkingError(
+        "chunk response did not contain any text chunks", raw_response=raw
+    )
 
 
 def _chunk_prompt(text: str, *, target_tokens: int, max_chunks: int) -> str:
@@ -196,6 +202,16 @@ def chunk_document_with_llm_fallback(
                 "llm_error": str(exc),
             }
         )
+        llm_response = None
+        if isinstance(exc, ChunkingError):
+            llm_response = getattr(exc, "raw_response", None)
+        elif hasattr(exc, "response"):
+            try:
+                llm_response = getattr(exc.response, "text", None)
+            except Exception:
+                llm_response = None
+        if llm_response:
+            metadata["llm_response"] = str(llm_response)[:1000]
         if return_debug:
             return fallback, metadata
         return fallback
