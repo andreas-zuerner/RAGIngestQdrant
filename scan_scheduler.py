@@ -395,7 +395,9 @@ def main():
             if stop_requested:
                 break
 
-            sleep_remaining = SLEEP_SECS
+            sleep_remaining = 300 if queued == 0 else SLEEP_SECS
+            if queued == 0 and sleep_remaining != SLEEP_SECS:
+                print(f"[scan] idle queue detected, sleeping {sleep_remaining}s", flush=True)
             while sleep_remaining > 0 and not stop_requested:
                 time.sleep(min(1, sleep_remaining))
                 sleep_remaining -= 1
