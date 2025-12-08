@@ -149,6 +149,9 @@ BRAIN_OVERLAP_TOKENS = int(os.environ.get("BRAIN_OVERLAP_TOKENS", "80"))
 BRAIN_REQUEST_TIMEOUT = float(os.environ.get("BRAIN_REQUEST_TIMEOUT", "120"))
 OLLAMA_HOST          = os.environ.get("OLLAMA_HOST", "http://192.168.177.130:11434")
 OLLAMA_MODEL         = os.environ.get("OLLAMA_MODEL", "mistral-small3.2:latest")
+OLLAMA_MODEL_RELEVANCE = os.environ.get("OLLAMA_MODEL_RELEVANCE", OLLAMA_MODEL)
+OLLAMA_MODEL_CHUNKING  = os.environ.get("OLLAMA_MODEL_CHUNKING", OLLAMA_MODEL)
+OLLAMA_MODEL_CONTEXT   = os.environ.get("OLLAMA_MODEL_CONTEXT", OLLAMA_MODEL)
 RELEVANCE_THRESHOLD  = float(os.environ.get("RELEVANCE_THRESHOLD", "0.55"))
 MIN_CHARS            = int(os.environ.get("MIN_CHARS", "200"))
 MAX_TEXT_CHARS       = int(os.environ.get("MAX_TEXT_CHARS", "100000"))
@@ -927,6 +930,9 @@ def process_one(conn, job_id, file_id):
             f"MAX_CHUNKS={MAX_CHUNKS} OVERLAP={OVERLAP} "
             f"OLLAMA_HOST={'set' if OLLAMA_HOST else 'unset'} "
             f"OLLAMA_MODEL={OLLAMA_MODEL!s} "
+            f"MODEL_RELEVANCE={OLLAMA_MODEL_RELEVANCE!s} "
+            f"MODEL_CHUNKING={OLLAMA_MODEL_CHUNKING!s} "
+            f"MODEL_CONTEXT={OLLAMA_MODEL_CONTEXT!s} "
             f"BRAIN_URL={'set' if BRAIN_URL else 'unset'} "
             f"KEY={'yes' if BRAIN_API_KEY else 'no'}"
         )
@@ -1004,8 +1010,15 @@ def process_one(conn, job_id, file_id):
             if not OLLAMA_HOST:
                 safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
                 raise RuntimeError("OLLAMA disabled")
-            safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL}")
-            ai = ai_score_text(OLLAMA_HOST, OLLAMA_MODEL, clean, timeout=600, debug=DEBUG, dbg_root=Path("./debug"))
+            safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
+            ai = ai_score_text(
+                OLLAMA_HOST,
+                OLLAMA_MODEL_RELEVANCE,
+                clean,
+                timeout=600,
+                debug=DEBUG,
+                dbg_root=Path("./debug"),
+            )
             is_rel = bool(ai.get("is_relevant"))
             conf   = float(ai.get("confidence", 0.0))
             safe_log(conn, job_id, file_id, "score", f"is_rel={is_rel} conf={conf}")
@@ -1023,7 +1036,7 @@ def process_one(conn, job_id, file_id):
         chunk_texts = chunk_document_with_llm_fallback(
             clean,
             ollama_host=OLLAMA_HOST,
-            model=OLLAMA_MODEL,
+            model=OLLAMA_MODEL_CHUNKING,
             target_tokens=BRAIN_CHUNK_TOKENS,
             overlap_chars=OVERLAP,
             max_chunks=MAX_CHUNKS,
@@ -1057,7 +1070,7 @@ def process_one(conn, job_id, file_id):
                 document=clean,
                 chunks=[c.text for c in chunks],
                 ollama_host=OLLAMA_HOST,
-                model=OLLAMA_MODEL,
+                model=OLLAMA_MODEL_CONTEXT,
                 timeout=BRAIN_REQUEST_TIMEOUT,
                 debug=DEBUG,
             )
