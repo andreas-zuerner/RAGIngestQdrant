@@ -76,7 +76,8 @@ def llm_chunk_document(
     max_chunks: int = 20,
     timeout: float = 120.0,
     debug: bool = False,
-) -> List[str]:
+    return_debug: bool = False,
+):
     if not text or not text.strip():
         raise ChunkingError("empty text supplied")
 
@@ -102,8 +103,22 @@ def llm_chunk_document(
             pass
 
     response.raise_for_status()
-    raw = _extract_response(response.json())
-    return _parse_chunk_payload(raw)
+    response_json = response.json()
+    raw = _extract_response(response_json)
+    chunks = _parse_chunk_payload(raw)
+
+    debug_info = {
+        "ollama_host": ollama_host,
+        "model": model,
+        "target_tokens": target_tokens,
+        "max_chunks": max_chunks,
+        "prompt_chars": len(prompt),
+        "response_chars": len(raw),
+        "status": response.status_code,
+    }
+    if return_debug:
+        return chunks, debug_info
+    return chunks
 
 
 def fallback_chunk_document(
@@ -141,9 +156,15 @@ def chunk_document_with_llm_fallback(
     max_chunks: int,
     timeout: float,
     debug: bool = False,
-) -> List[str]:
+    return_debug: bool = False,
+):
+    metadata = {
+        "llm_attempted": True,
+        "fallback_used": False,
+        "chunk_source": "llm",
+    }
     try:
-        return llm_chunk_document(
+        chunks, debug_info = llm_chunk_document(
             text,
             ollama_host=ollama_host,
             model=model,
@@ -151,12 +172,30 @@ def chunk_document_with_llm_fallback(
             max_chunks=max_chunks,
             timeout=timeout,
             debug=debug,
+            return_debug=True,
         )
-    except Exception:
+        metadata["llm_info"] = debug_info
+        metadata["chunks"] = len(chunks)
+        if return_debug:
+            return chunks, metadata
+        return chunks
+    except Exception as exc:
         chunk_chars = _approx_chars(target_tokens)
-        return fallback_chunk_document(
+        fallback = fallback_chunk_document(
             text,
             chunk_size_chars=chunk_chars,
             overlap_chars=overlap_chars,
             max_chunks=max_chunks,
         )
+        metadata.update(
+            {
+                "fallback_used": True,
+                "chunk_source": "fallback",
+                "fallback_chunk_size": chunk_chars,
+                "chunks": len(fallback),
+                "llm_error": str(exc),
+            }
+        )
+        if return_debug:
+            return fallback, metadata
+        return fallback
