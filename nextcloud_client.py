@@ -3,6 +3,7 @@ import os
 import posixpath
 import tempfile
 import xml.etree.ElementTree as ET
+from urllib.parse import urlsplit
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -64,11 +65,21 @@ class NextcloudClient:
             if href_elem is None or not href_elem.text:
                 continue
             href = href_elem.text
-            # Normalize: strip base + trailing slash
+            dav_root = f"/remote.php/dav/files/{self.user}"
+            # Normalize href to a path relative to the DAV root, even if the host differs
             if href.startswith(self._dav_base):
                 rel = href[len(self._dav_base) :]
             else:
-                rel = href
+                parsed = urlsplit(href)
+                path_only = parsed.path if parsed.scheme else href
+                if path_only.startswith(dav_root):
+                    rel = path_only[len(dav_root) :]
+                elif dav_root in path_only:
+                    idx = path_only.find(dav_root)
+                    rel = path_only[idx + len(dav_root) :]
+                else:
+                    rel = path_only
+            # Normalize: strip base + trailing slash
             rel = rel.rstrip("/") or "/"
             if rel == base_path.rstrip("/"):
                 is_root = True
