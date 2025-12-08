@@ -263,6 +263,10 @@ def sync_and_enqueue(conn):
         return added, enq, 0
 
     for root in ROOT_DIRS:
+        print(
+            f"[scan] walking Nextcloud root={root} base_url={NEXTCLOUD_BASE_URL} user={NEXTCLOUD_USER}",
+            flush=True,
+        )
         try:
             for entry in client.walk(root):
                 if entry.get("is_dir"):
@@ -309,6 +313,7 @@ def sync_and_enqueue(conn):
         except NextcloudError as exc:
             print(f"[scan] Nextcloud error for root {root}: {exc}", flush=True)
             continue
+        print(f"[scan] finished root={root} added={added} enqueued={enq}", flush=True)
 
     removed = purge_missing(conn, seen)
     conn.commit()

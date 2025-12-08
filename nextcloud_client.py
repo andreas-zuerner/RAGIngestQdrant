@@ -26,6 +26,13 @@ class NextcloudClient:
         self.session = requests.Session()
         self.session.auth = (user, token)
         self._dav_base = f"{self.base_url}/remote.php/dav/files/{self.user}"
+        self.debug = os.environ.get("NEXTCLOUD_DEBUG", "0") == "1"
+
+    def _log(self, msg: str):
+        if not self.debug:
+            return
+        ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        print(f"[nextcloud] {ts} {msg}", flush=True)
 
     # ---------- Helpers ----------
     def _url(self, remote_path: str) -> str:
@@ -105,9 +112,11 @@ class NextcloudClient:
     # ---------- Operations ----------
     def login(self) -> bool:
         url = self._url("/")
+        self._log(f"login PROPFIND {url}")
         r = self.session.request("PROPFIND", url, headers={"Depth": "0"})
         if not r.ok:
             raise NextcloudError(f"Login failed: {r.status_code} {r.text[:200]}")
+        self._log(f"login ok status={r.status_code}")
         return True
 
     def mkdir(self, remote_path: str):
@@ -133,13 +142,16 @@ class NextcloudClient:
             "<d:prop><d:getlastmodified/><d:getcontentlength/><d:resourcetype/><d:getetag/></d:prop>"
             "</d:propfind>"
         )
+        self._log(f"list_directory path={remote_path} depth={depth} url={url}")
         r = self.session.request("PROPFIND", url, headers={"Depth": str(depth)}, data=body)
         if not r.ok:
             raise NextcloudError(f"PROPFIND failed for {remote_path}: {r.status_code} {r.text[:200]}")
         entries = self._parse_prop(r.text, posixpath.normpath(remote_path) or "/")
+        self._log(f"list_directory entries={len(entries)} for {remote_path}")
         return [e for e in entries if not e.get("is_root")]
 
     def walk(self, remote_path: str) -> Generator[Dict[str, object], None, None]:
+        self._log(f"walk start root={remote_path}")
         stack = [remote_path]
         while stack:
             current = stack.pop()
@@ -155,6 +167,7 @@ class NextcloudClient:
 
     def read_file(self, remote_path: str) -> bytes:
         url = self._url(remote_path)
+        self._log(f"read_file {url}")
         r = self.session.get(url, stream=True)
         if not r.ok:
             raise NextcloudError(f"GET failed for {remote_path}: {r.status_code} {r.text[:200]}")
@@ -162,6 +175,7 @@ class NextcloudClient:
 
     def download_file(self, remote_path: str, target: Path) -> Path:
         url = self._url(remote_path)
+        self._log(f"download_file {remote_path} -> {target}")
         r = self.session.get(url, stream=True)
         if not r.ok:
             raise NextcloudError(f"Download failed for {remote_path}: {r.status_code} {r.text[:200]}")
@@ -175,6 +189,7 @@ class NextcloudClient:
     def upload_file(self, remote_path: str, local_path: Path):
         self._ensure_parent(remote_path)
         url = self._url(remote_path)
+        self._log(f"upload_file {local_path} -> {remote_path}")
         with local_path.open("rb") as fh:
             r = self.session.put(url, data=fh)
         if not r.ok:
@@ -183,6 +198,7 @@ class NextcloudClient:
     def upload_bytes(self, remote_path: str, data: bytes):
         self._ensure_parent(remote_path)
         url = self._url(remote_path)
+        self._log(f"upload_bytes {len(data)}B -> {remote_path}")
         r = self.session.put(url, data=data)
         if not r.ok:
             raise NextcloudError(f"Upload failed for {remote_path}: {r.status_code} {r.text[:200]}")
@@ -200,5 +216,9 @@ def env_client() -> NextcloudClient:
     user = os.environ.get("NEXTCLOUD_USER", "andreas")
     token = os.environ.get("TOKEN") or os.environ.get("NEXTCLOUD_TOKEN", "")
     client = NextcloudClient(base_url, user, token)
+    print(
+        f"[nextcloud] init base_url={base_url} user={user} token={'set' if bool(token) else 'missing'}",
+        flush=True,
+    )
     client.login()
     return client
