@@ -1071,7 +1071,14 @@ def process_one(conn, job_id, file_id):
         log(
             f"[chunking_start] job_id={job_id} file_id={file_id} len={len(clean)} max_chunks={MAX_CHUNKS} overlap={OVERLAP}"
         )
-        chunk_texts = chunk_document_with_llm_fallback(
+        safe_log(
+            conn,
+            job_id,
+            file_id,
+            "chunking_request",
+            f"model={OLLAMA_MODEL_CHUNKING} tokens={BRAIN_CHUNK_TOKENS} overlap_chars={OVERLAP} max_chunks={MAX_CHUNKS} chars={len(clean)}",
+        )
+        chunk_texts, chunk_meta = chunk_document_with_llm_fallback(
             clean,
             ollama_host=OLLAMA_HOST,
             model=OLLAMA_MODEL_CHUNKING,
@@ -1080,9 +1087,24 @@ def process_one(conn, job_id, file_id):
             max_chunks=MAX_CHUNKS,
             timeout=BRAIN_REQUEST_TIMEOUT,
             debug=DEBUG,
+            return_debug=True,
         )
 
         chunk_source = "llm_chunking"
+        if chunk_meta.get("chunk_source") == "fallback":
+            chunk_source = "llm_fallback"
+        if chunk_meta:
+            safe_log(
+                conn,
+                job_id,
+                file_id,
+                "chunking_meta",
+                json.dumps(chunk_meta, ensure_ascii=False)[:500],
+            )
+            log_debug(
+                f"[chunking_meta] job_id={job_id} file_id={file_id} llm={chunk_meta.get('llm_info')} fallback={chunk_meta.get('fallback_used')}"
+            )
+
         if not chunk_texts and extraction.chunks:
             chunk_texts = [c.text for c in extraction.chunks]
             chunk_source = "docling_fallback"
@@ -1101,6 +1123,16 @@ def process_one(conn, job_id, file_id):
         log_debug(
             f"[chunking_detail] job_id={job_id} file_id={file_id} chunk_lengths={[len(c) for c in chunk_texts]}"
         )
+        try:
+            safe_log(
+                conn,
+                job_id,
+                file_id,
+                "chunking_lengths",
+                str([len(c) for c in chunk_texts])[:500],
+            )
+        except Exception:
+            pass
 
         chunks: List[DoclingChunk] = []
         for idx, chunk_text in enumerate(chunk_texts, 1):
