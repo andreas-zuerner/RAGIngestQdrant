@@ -160,6 +160,7 @@ OVERLAP              = int(os.environ.get("OVERLAP", "400"))
 MAX_CHUNKS           = int(os.environ.get("MAX_CHUNKS", "200"))
 ENABLE_OCR           = os.environ.get("ENABLE_OCR", "0") == "1"
 DEBUG                = os.environ.get("DEBUG", "0") == "1"
+WORKER_DEBUG_LOGS    = os.environ.get("WORKER_DEBUG_LOGS", os.environ.get("DEBUG", "0")) == "1"
 LOCK_TIMEOUT_S       = int(os.environ.get("LOCK_TIMEOUT_S", "600"))
 IDLE_SLEEP_S         = float(os.environ.get("IDLE_SLEEP_S", "1.0"))
 PDFTOTEXT_TIMEOUT_S  = int(os.environ.get("PDFTOTEXT_TIMEOUT_S", "60"))
@@ -184,6 +185,11 @@ _NEXTCLOUD_CLIENT: NextcloudClient | None = None
 def log(msg):
     ts = datetime.utcnow().isoformat(timespec='seconds') + "Z"
     print(f"[worker_id] {ts} {msg}", flush=True)
+
+
+def log_debug(msg):
+    if WORKER_DEBUG_LOGS:
+        log(msg)
 
 
 def get_nextcloud_client() -> NextcloudClient:
@@ -303,10 +309,11 @@ def cleanup_stale(conn):
         UPDATE jobs
            SET status='queued', locked_at=NULL, worker_id=NULL
          WHERE status='running' AND locked_at < datetime('now', ?)
-        """, (f"-{cutoff} seconds",)
+        """,
+        (f"-{cutoff} seconds",),
     )
     freed = cur.rowcount if hasattr(cur, "rowcount") else 0
-    print(f"{freed}", flush=True)
+    log(f"[cleanup] freed={freed} stale jobs")
     if freed:
         log_decision(conn, None, None, "cleanup", f"freed={freed}")
     return freed
@@ -328,9 +335,11 @@ def finish_success(conn, job_id, file_id, status: str):
             """,
             (status, next_review_at, review_reason, file_id),
         )
-        print(f" Successfully finished file_id={file_id}", flush=True)
+        log(
+            f"[finish_success] job_id={job_id} file_id={file_id} status={status} next_review_at={next_review_at}"
+        )
     else:
-        print("file_id ist leer", flush=True)
+        log("[finish_success] file_id missing during update")
     conn.execute("UPDATE jobs SET status='done', locked_at=NULL WHERE job_id=?", (job_id,))
     conn.execute(
         "INSERT INTO decision_log(step, job_id, file_id, detail) VALUES(?,?,?,?)",
@@ -341,6 +350,7 @@ def finish_success(conn, job_id, file_id, status: str):
 
 def finish_error(conn, job_id, file_id, status: str, msg):
     message = str(msg)[:500]
+    log(f"[finish_error] job_id={job_id} file_id={file_id} status={status} message={message}")
     if file_id:
         next_review_at, review_reason = compute_next_review_at(status)
         conn.execute(
@@ -895,8 +905,9 @@ def process_one(conn, job_id, file_id):
             except Exception:
                 return fallback
 
+    log(f"[process_start] job_id={job_id} file_id={file_id}")
     # 1) Pfad aus files
-    row = conn.execute("SELECT path FROM files WHERE id=?", (file_id,)).fetchone()
+    row = conn.execute("SELECT path, size, mtime, priority FROM files WHERE id=?", (file_id,)).fetchone()
     if not row:
         finish_error(conn, job_id, file_id, "error_missing_db_record", "file_id not found in files")
         return
@@ -906,17 +917,23 @@ def process_one(conn, job_id, file_id):
         return
     p = Path(path)
     temp_file: Path | None = None
+    size_hint = _get(row, "size")
+    log(
+        f"[process_path] job_id={job_id} file_id={file_id} path={p} size={size_hint} priority={_get(row, 'priority')}"
+    )
     safe_log(conn, job_id, file_id, "path_ok", str(p))
 
     if not p.exists():
         try:
             client = get_nextcloud_client()
-            log(f"[download_missing] fetching {path} from Nextcloud {NEXTCLOUD_BASE_URL}")
+            log(
+                f"[download_missing] job_id={job_id} file_id={file_id} path={path} base_url={NEXTCLOUD_BASE_URL}"
+            )
             temp_file = client.download_to_temp(path, suffix=p.suffix)
             p = temp_file
             safe_log(conn, job_id, file_id, "downloaded", f"temp={p}")
         except Exception as exc:
-            log(f"[download_missing_error] {path}: {exc}")
+            log(f"[download_missing_error] job_id={job_id} path={path} err={exc}")
             update_file_result(conn, file_id, {"accepted": False, "error": "missing_file"})
             finish_error(conn, job_id, file_id, "error_missing_file", f"{exc}")
             return
@@ -948,6 +965,7 @@ def process_one(conn, job_id, file_id):
 
     try:
         size = p.stat().st_size
+        log(f"[extract_start] job_id={job_id} file_id={file_id} path={p} size={size}")
         ingestor = get_docling_ingestor()
 
         extraction: Optional[DoclingExtraction] = None
@@ -957,8 +975,12 @@ def process_one(conn, job_id, file_id):
             extraction = ingestor.extract(p)
         except Exception as e:
             docling_error = e
+            log(f"[extract_error] job_id={job_id} file_id={file_id} path={p} err={e}")
 
         if extraction is None and p.suffix.lower() == ".pdf":
+            log(
+                f"[extract_fallback] job_id={job_id} file_id={file_id} using legacy PDF fallback due to {docling_error}"
+            )
             safe_log(conn, job_id, file_id, "docling_pdf_fallback", str(docling_error))
             try:
                 fallback_text = legacy_pdf_fallback_text(p)
@@ -967,6 +989,9 @@ def process_one(conn, job_id, file_id):
                 if docling_error is None:
                     docling_error = e
             if fallback_text:
+                log(
+                    f"[extract_fallback_success] job_id={job_id} file_id={file_id} text_len={len(fallback_text)}"
+                )
                 chunks = ingestor._chunk_text(fallback_text)
                 extraction = DoclingExtraction(
                     text=fallback_text,
@@ -987,6 +1012,9 @@ def process_one(conn, job_id, file_id):
 
         clean = (extraction.text or "").strip()
         detected = extraction.mime_type or "docling-serve"
+        log(
+            f"[extract_ok] job_id={job_id} file_id={file_id} mime={detected} chars={len(clean)} chunks={len(extraction.chunks)} source={docling_source}"
+        )
         log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; size={size}; source={docling_source}")
         log_decision(
             conn,
@@ -1010,6 +1038,9 @@ def process_one(conn, job_id, file_id):
             if not OLLAMA_HOST:
                 safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
                 raise RuntimeError("OLLAMA disabled")
+            log(
+                f"[ai_score_start] job_id={job_id} file_id={file_id} len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}"
+            )
             safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
             ai = ai_score_text(
                 OLLAMA_HOST,
@@ -1021,6 +1052,7 @@ def process_one(conn, job_id, file_id):
             )
             is_rel = bool(ai.get("is_relevant"))
             conf   = float(ai.get("confidence", 0.0))
+            log(f"[ai_score_result] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf}")
             safe_log(conn, job_id, file_id, "score", f"is_rel={is_rel} conf={conf}")
         except Exception as e:
             update_file_result(conn, file_id, {"accepted": False, "error": f"ai_scoring_failed: {e}"})
@@ -1028,11 +1060,17 @@ def process_one(conn, job_id, file_id):
             return
 
         if not is_rel or conf < RELEVANCE_THRESHOLD:
+            log(
+                f"[ai_threshold_skip] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf} threshold={RELEVANCE_THRESHOLD}"
+            )
             update_file_result(conn, file_id, {"accepted": False, "ai": ai, "reason": "below_threshold", "threshold": RELEVANCE_THRESHOLD})
             log_decision(conn, job_id, file_id, "threshold", f"skip: is_relevant={is_rel} conf={conf} < RELEVANCE_THRESHOLD={RELEVANCE_THRESHOLD}")
             finish_success(conn, job_id, file_id, "ai_not_relevant")
             return
 
+        log(
+            f"[chunking_start] job_id={job_id} file_id={file_id} len={len(clean)} max_chunks={MAX_CHUNKS} overlap={OVERLAP}"
+        )
         chunk_texts = chunk_document_with_llm_fallback(
             clean,
             ollama_host=OLLAMA_HOST,
@@ -1048,9 +1086,21 @@ def process_one(conn, job_id, file_id):
         if not chunk_texts and extraction.chunks:
             chunk_texts = [c.text for c in extraction.chunks]
             chunk_source = "docling_fallback"
+            log_debug(
+                f"[chunking_docling_fallback] job_id={job_id} file_id={file_id} using {len(chunk_texts)} docling chunks"
+            )
         elif not chunk_texts:
             chunk_texts = [clean]
             chunk_source = "single_block"
+            log_debug(
+                f"[chunking_single_block] job_id={job_id} file_id={file_id} chars={len(clean)}"
+            )
+        log(
+            f"[chunking_done] job_id={job_id} file_id={file_id} chunks={len(chunk_texts)} source={chunk_source}"
+        )
+        log_debug(
+            f"[chunking_detail] job_id={job_id} file_id={file_id} chunk_lengths={[len(c) for c in chunk_texts]}"
+        )
 
         chunks: List[DoclingChunk] = []
         for idx, chunk_text in enumerate(chunk_texts, 1):
@@ -1064,6 +1114,9 @@ def process_one(conn, job_id, file_id):
                     if key in original_meta:
                         meta[key] = original_meta[key]
             chunks.append(DoclingChunk(text=chunk_text, meta=meta))
+            log_debug(
+                f"[chunk_built] job_id={job_id} file_id={file_id} idx={idx}/{len(chunk_texts)} len={len(chunk_text)} meta={meta}"
+            )
 
         try:
             enriched = enrich_chunks_with_context(
@@ -1081,6 +1134,9 @@ def process_one(conn, job_id, file_id):
         except Exception as e:
             safe_log(conn, job_id, file_id, "context_fallback", f"{e}")
 
+        log(
+            f"[chunk_plan] job_id={job_id} file_id={file_id} chunks={len(chunks)} source={chunk_source} overlap={OVERLAP}"
+        )
         log_decision(
             conn,
             job_id,
@@ -1107,12 +1163,18 @@ def process_one(conn, job_id, file_id):
                 if not BRAIN_URL:
                     safe_log(conn, job_id, file_id, "no_brain_url", "BRAIN_URL not set -> skipping POST")
                     raise RuntimeError("Brain URL not configured")
+                log(
+                    f"[brain_post] job_id={job_id} file_id={file_id} chunk={idx}/{len(chunks)} len={len(chunk.text)}"
+                )
+                log_debug(
+                    f"[brain_post_payload] job_id={job_id} file_id={file_id} idx={idx} meta={chunk_meta}"
+                )
                 safe_log(
                     conn,
                     job_id,
                     file_id,
                     "pre_brain_post",
-                    f"chunk={idx}/{len(docling_chunks)} len={len(chunk.text)} url={BRAIN_URL}",
+                    f"chunk={idx}/{len(chunks)} len={len(chunk.text)} url={BRAIN_URL}",
                 )
                 ok = brain_ingest_text(
                     BRAIN_URL,
@@ -1128,16 +1190,19 @@ def process_one(conn, job_id, file_id):
                     errors.append(f"chunk {idx} failed")
             except Exception as e:
                 safe_log(conn, job_id, file_id, "brain_err", f"chunk={idx} err={e}")
+                log(
+                    f"[brain_error] job_id={job_id} file_id={file_id} chunk={idx}/{len(chunks)} err={e}"
+                )
                 errors.append(f"chunk {idx} error: {e}")
 
         result = {
             "accepted": len(errors) == 0,
             "ai": ai,
-            "chunks": len(docling_chunks),
+            "chunks": len(chunks),
             "docling": {
                 "mime": extraction.mime_type,
                 "source": docling_source,
-                "chunks": [chunk.meta for chunk in docling_chunks],
+                "chunks": [chunk.meta for chunk in chunks],
                 "images": extraction.images,
             },
             "images": extraction.images,
@@ -1174,14 +1239,16 @@ def main():
         pass
     conn.row_factory = sqlite_dict_factory
 
-    log(f"DB={DB_PATH} brain_url={BRAIN_URL} key_present={bool(BRAIN_API_KEY)} threshold={RELEVANCE_THRESHOLD}")
+    log(
+        f"[startup] DB={DB_PATH} brain_url={BRAIN_URL} key_present={bool(BRAIN_API_KEY)} "
+        f"threshold={RELEVANCE_THRESHOLD} worker_id={WORKER_ID}"
+    )
     try:
         while True:
-            # print(f"Start while", flush=True)
+            log("[loop] tick")
             cleanup_stale(conn)
-            # print(f"cleanup", flush=True)
             job_id, file_id = claim_one(conn)
-            print(f"Starting job_id={job_id}, file_id={file_id}", flush=True)
+            log(f"[claim] job_id={job_id} file_id={file_id}")
             if not job_id:
                 log("no queued jobs found - shutting down")
                 break
