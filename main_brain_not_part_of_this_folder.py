@@ -1,16 +1,13 @@
 import io
-import os, time, uuid, typing as T
+import os, time, uuid
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 import httpx
-import hashlib, math
 from fastapi import UploadFile, File
 from pypdf import PdfReader
 
-from add_context import enrich_chunks_with_context
-from chunking import chunk_document_with_llm_fallback
 
 # ------------------ Settings ------------------
 class Settings(BaseSettings):
@@ -28,12 +25,14 @@ class Settings(BaseSettings):
         return v.split("#", 1)[0].strip() if isinstance(v, str) else v
 
     class Config:
+        # The brain service runs on a separate instance and already has its
+        # environment provided there. Using the original `.env` file keeps local
+        # development convenient without forcing prod secrets to be copied
+        # between hosts.
         env_file = ".env"
         extra = "ignore"
 
 settings = Settings()
-DEFAULT_MAX_CHUNKS = 200
-
 # ------------------ App ------------------
 app = FastAPI(title="Brain", version="1.0.0")
 
@@ -98,43 +97,15 @@ def resolve_collection(name: str | None) -> str:
 def select_chunks_for_ingest(
     text: str | None,
     provided_chunks: list[str] | None,
-    *,
-    chunk_tokens: int | None,
-    overlap_tokens: int | None,
 ):
-    document_text = text or "\n\n".join(provided_chunks or [])
-    overlap_chars = (overlap_tokens or 0) * 4
-    target_tokens = chunk_tokens or 800
-
     chunks = [c.strip() for c in (provided_chunks or []) if isinstance(c, str) and c.strip()]
-    if not chunks and document_text:
-        chunks = chunk_document_with_llm_fallback(
-            document_text,
-            ollama_host=settings.OLLAMA_URL,
-            model=settings.CHAT_MODEL,
-            target_tokens=target_tokens,
-            overlap_chars=overlap_chars,
-            max_chunks=DEFAULT_MAX_CHUNKS,
-            timeout=60,
-        )
+    if chunks:
+        return chunks
 
-    if not chunks:
-        return []
+    if text and text.strip():
+        return [text.strip()]
 
-    try:
-        enriched = enrich_chunks_with_context(
-            document=document_text,
-            chunks=chunks,
-            ollama_host=settings.OLLAMA_URL,
-            model=settings.CHAT_MODEL,
-            timeout=60,
-        )
-        if enriched and len(enriched) == len(chunks):
-            chunks = enriched
-    except Exception:
-        pass
-
-    return chunks
+    return []
 
 
 @app.post("/ingest/text")
@@ -143,8 +114,6 @@ async def ingest_text(inp: IngestTextIn, _: bool = Depends(check_api_key)):
     chunk_texts = select_chunks_for_ingest(
         inp.text,
         inp.chunks,
-        chunk_tokens=inp.chunk_tokens,
-        overlap_tokens=inp.overlap_tokens,
     )
     if not chunk_texts:
         raise HTTPException(400, "No text content to ingest")
@@ -174,12 +143,7 @@ async def ingest_file(file: UploadFile = File(...),
     else:
         raise HTTPException(415, f"Unsupported content-type: {ct} (filename={file.filename})")
 
-    chunk_texts = select_chunks_for_ingest(
-        text,
-        None,
-        chunk_tokens=chunk_tokens,
-        overlap_tokens=overlap_tokens,
-    )
+    chunk_texts = select_chunks_for_ingest(text, None)
     chunks = [(t, meta) for t in chunk_texts]
     if not chunks:
         raise HTTPException(400, "No text extracted/chunked")
