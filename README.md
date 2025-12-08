@@ -57,6 +57,18 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
 
    Die Konsolen-Ausgabe befindet sich in `logs/scan_scheduler.log`.
 
+## LLM-Modellwahl pro Verarbeitungsschritt
+
+Standardmäßig wird das Modell aus `OLLAMA_MODEL` für alle Schritte verwendet. Bei Bedarf
+kannst du für einzelne Aufgaben spezifische Modelle hinterlegen (anderen Host musst du
+dafür nicht setzen):
+
+* `OLLAMA_MODEL_RELEVANCE` – Relevanzbewertung des extrahierten Volltexts.
+* `OLLAMA_MODEL_CHUNKING` – LLM-gestütztes Chunking vor dem Ingest in den Brain-Dienst.
+* `OLLAMA_MODEL_CONTEXT` – Kontextanreicherung der erzeugten Chunks.
+
+Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLAMA_MODEL`.
+
 ## Nextcloud-Einbindung und docling-serve
 
 * Der Scheduler durchsucht standardmäßig zwei Nextcloud-Ordner per WebDAV: einen
