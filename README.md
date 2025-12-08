@@ -66,6 +66,15 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
   `ROOT_DIRS` (kommagetrennt) überschreiben. Der Bilder-Ordner wird von der
   SQLite-Datenbank genauso überwacht wie der Dokument-Ordner und kann dadurch
   bequem mit einer Admin-Oberfläche wie phpLiteAdmin gepflegt werden.
+* `scan_scheduler.py` initialisiert den WebDAV-Client über `env_client()` und
+  läuft mit `client.walk(...)` rekursiv über die oben genannten Nextcloud-
+  Ordner. So landen neu hochgeladene Dateien unmittelbar als Jobs in der
+  lokalen Queue.
+* `ingest_worker.py` nutzt ebenfalls denselben Nextcloud-Client: Fehlt eine
+  Datei lokal, wird sie per `download_to_temp(...)` aus dem Dokumente-Ordner
+  nachgeladen. Zusätzlich speichert der Docling-Ingestor erkannte Bilder via
+  `upload_bytes(...)` in den dedizierten Nextcloud-Bilder-Ordner und fügt die
+  Referenzen in den extrahierten Text ein.
 * Die Nextcloud-Instanz ist über `http://192.168.177.133:8080` erreichbar. Der
   Standardbenutzer lautet `andreas`; der dazugehörige API-Token wird in
   `.env.local` unter `TOKEN` (optional auch `NEXTCLOUD_TOKEN`) hinterlegt und

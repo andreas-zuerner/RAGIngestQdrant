@@ -183,6 +183,10 @@ def get_nextcloud_client() -> NextcloudClient:
     global _NEXTCLOUD_CLIENT
     if _NEXTCLOUD_CLIENT is None:
         client = env_client()
+        log(
+            f"[nextcloud_client_ready] base_url={NEXTCLOUD_BASE_URL} user={NEXTCLOUD_USER} "
+            f"token={'set' if bool(NEXTCLOUD_TOKEN) else 'missing'}"
+        )
         _NEXTCLOUD_CLIENT = client
     return _NEXTCLOUD_CLIENT
 
@@ -451,6 +455,7 @@ class DoclingServeIngestor:
             try:
                 if self.nextcloud_client:
                     remote_path = posixpath.normpath(f"/{self.remote_image_dir}/{fname}")
+                    log(f"[image_upload] pushing {fname} to Nextcloud {remote_path}")
                     self.nextcloud_client.upload_bytes(remote_path, raw)
                     reference = remote_path
                 else:
@@ -528,6 +533,7 @@ def get_docling_ingestor() -> DoclingServeIngestor:
     global _DOCLING_INGESTOR
     if _DOCLING_INGESTOR is None:
         nxc = get_nextcloud_client()
+        log(f"[docling_ingestor] using Nextcloud images dir {NEXTCLOUD_IMAGE_DIR}")
         _DOCLING_INGESTOR = DoclingServeIngestor(
             chunk_size=MAX_CHARS,
             chunk_overlap=OVERLAP,
@@ -793,10 +799,12 @@ def process_one(conn, job_id, file_id):
     if not p.exists():
         try:
             client = get_nextcloud_client()
+            log(f"[download_missing] fetching {path} from Nextcloud {NEXTCLOUD_BASE_URL}")
             temp_file = client.download_to_temp(path, suffix=p.suffix)
             p = temp_file
             safe_log(conn, job_id, file_id, "downloaded", f"temp={p}")
         except Exception as exc:
+            log(f"[download_missing_error] {path}: {exc}")
             update_file_result(conn, file_id, {"accepted": False, "error": "missing_file"})
             finish_error(conn, job_id, file_id, "error_missing_file", f"{exc}")
             return
