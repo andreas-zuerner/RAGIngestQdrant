@@ -23,6 +23,8 @@ import requests
 from nextcloud_client import env_client, NextcloudClient, NextcloudError
 
 from helpers import compute_next_review_at, utcnow_iso
+from chunking import chunk_document_with_llm_fallback
+from add_context import enrich_chunks_with_context
 
 
 class DoclingUnavailableError(RuntimeError):
@@ -1018,22 +1020,69 @@ def process_one(conn, job_id, file_id):
             finish_success(conn, job_id, file_id, "ai_not_relevant")
             return
 
-        docling_chunks = extraction.chunks
+        chunk_texts = chunk_document_with_llm_fallback(
+            clean,
+            ollama_host=OLLAMA_HOST,
+            model=OLLAMA_MODEL,
+            target_tokens=BRAIN_CHUNK_TOKENS,
+            overlap_chars=OVERLAP,
+            max_chunks=MAX_CHUNKS,
+            timeout=BRAIN_REQUEST_TIMEOUT,
+            debug=DEBUG,
+        )
+
+        chunk_source = "llm_chunking"
+        if not chunk_texts and extraction.chunks:
+            chunk_texts = [c.text for c in extraction.chunks]
+            chunk_source = "docling_fallback"
+        elif not chunk_texts:
+            chunk_texts = [clean]
+            chunk_source = "single_block"
+
+        chunks: List[DoclingChunk] = []
+        for idx, chunk_text in enumerate(chunk_texts, 1):
+            meta: Dict[str, object] = {
+                "chunk_index": idx,
+                "chunks_total": len(chunk_texts),
+            }
+            if chunk_source == "docling_fallback" and idx - 1 < len(extraction.chunks):
+                original_meta = extraction.chunks[idx - 1].meta
+                for key in ("page_start", "page_end", "section"):
+                    if key in original_meta:
+                        meta[key] = original_meta[key]
+            chunks.append(DoclingChunk(text=chunk_text, meta=meta))
+
+        try:
+            enriched = enrich_chunks_with_context(
+                document=clean,
+                chunks=[c.text for c in chunks],
+                ollama_host=OLLAMA_HOST,
+                model=OLLAMA_MODEL,
+                timeout=BRAIN_REQUEST_TIMEOUT,
+                debug=DEBUG,
+            )
+            if enriched and len(enriched) == len(chunks):
+                for chunk, enriched_text in zip(chunks, enriched):
+                    chunk.text = enriched_text
+                chunk_source += "+context"
+        except Exception as e:
+            safe_log(conn, job_id, file_id, "context_fallback", f"{e}")
+
         log_decision(
             conn,
             job_id,
             file_id,
             "chunk_plan",
-            f"chunks={len(docling_chunks)} via docling-serve overlap={OVERLAP}",
+            f"chunks={len(chunks)} via {chunk_source} overlap={OVERLAP}",
         )
 
         errors = []
-        for idx, chunk in enumerate(docling_chunks, 1):
+        for idx, chunk in enumerate(chunks, 1):
             chunk_meta = {
                 "source": "ct108",
                 "path": str(p),
                 "chunk_index": chunk.meta.get("chunk_index", idx),
-                "chunks_total": len(docling_chunks),
+                "chunks_total": len(chunks),
                 "job_id": job_id,
                 "file_id": file_id,
             }
@@ -1057,8 +1106,6 @@ def process_one(conn, job_id, file_id):
                     BRAIN_API_KEY,
                     chunk.text,
                     meta=chunk_meta,
-                    chunk_tokens=BRAIN_CHUNK_TOKENS,
-                    overlap_tokens=BRAIN_OVERLAP_TOKENS,
                     collection=BRAIN_COLLECTION,
                     timeout=BRAIN_REQUEST_TIMEOUT,
                 )

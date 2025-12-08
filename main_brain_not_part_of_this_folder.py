@@ -1,13 +1,16 @@
-import os, time, uuid, typing as T
 import io
-from fastapi import FastAPI, HTTPException, Header, Depends
-from pydantic import BaseModel
+import os, time, uuid, typing as T
+from fastapi import Depends, FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 import httpx
 import hashlib, math
 from fastapi import UploadFile, File
 from pypdf import PdfReader
+
+from add_context import enrich_chunks_with_context
+from chunking import chunk_document_with_llm_fallback
 
 # ------------------ Settings ------------------
 class Settings(BaseSettings):
@@ -29,6 +32,7 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 settings = Settings()
+DEFAULT_MAX_CHUNKS = 200
 
 # ------------------ App ------------------
 app = FastAPI(title="Brain", version="1.0.0")
@@ -48,23 +52,6 @@ def check_api_key(
 def text_uuid(text: str) -> str:
     clean = " ".join(text.strip().split())
     return str(uuid.uuid5(uuid.NAMESPACE_URL, clean))
-
-def chunk_text(text: str, max_tokens: int = 800, overlap: int = 120) -> list[str]:
-    # sehr einfache Approx: 1 Token ~ 4 Zeichen → 800 tok ~ 3200 chars
-    max_chars = max_tokens * 4
-    step = max_chars - overlap * 4
-    text = " ".join(text.split())  # whitespace normalisieren
-    chunks = []
-    i = 0
-    while i < len(text):
-        chunk = text[i:i+max_chars]
-        # versuche, an Satzende zu schneiden
-        cut = max(chunk.rfind(". "), chunk.rfind("! "), chunk.rfind("? "))
-        if cut > max_chars * 0.6:
-            chunk = chunk[:cut+1]
-        chunks.append(chunk)
-        i += step if step > 0 else max_chars
-    return [c for c in chunks if c.strip()]
 
 # ------------------ Models ------------------
 class TextIn(BaseModel):
@@ -88,10 +75,17 @@ class ChatIn(BaseModel):
     system: str | None = None
 
 class IngestTextIn(BaseModel):
-    text: str
+    text: str | None = None
+    chunks: list[str] | None = None
     meta: dict | None = None
-    chunk_tokens: int = 800
-    overlap_tokens: int = 120
+    chunk_tokens: int | None = Field(
+        default=None,
+        description="Preferred target chunk size in tokens (guidance only).",
+    )
+    overlap_tokens: int | None = Field(
+        default=None,
+        description="Optional overlap in tokens for fallback chunking.",
+    )
     collection: str | None = None
 
 
@@ -100,11 +94,61 @@ def resolve_collection(name: str | None) -> str:
     clean = name.strip() if isinstance(name, str) else None
     return clean or settings.QDRANT_COLLECTION
 
+
+def select_chunks_for_ingest(
+    text: str | None,
+    provided_chunks: list[str] | None,
+    *,
+    chunk_tokens: int | None,
+    overlap_tokens: int | None,
+):
+    document_text = text or "\n\n".join(provided_chunks or [])
+    overlap_chars = (overlap_tokens or 0) * 4
+    target_tokens = chunk_tokens or 800
+
+    chunks = [c.strip() for c in (provided_chunks or []) if isinstance(c, str) and c.strip()]
+    if not chunks and document_text:
+        chunks = chunk_document_with_llm_fallback(
+            document_text,
+            ollama_host=settings.OLLAMA_URL,
+            model=settings.CHAT_MODEL,
+            target_tokens=target_tokens,
+            overlap_chars=overlap_chars,
+            max_chunks=DEFAULT_MAX_CHUNKS,
+            timeout=60,
+        )
+
+    if not chunks:
+        return []
+
+    try:
+        enriched = enrich_chunks_with_context(
+            document=document_text,
+            chunks=chunks,
+            ollama_host=settings.OLLAMA_URL,
+            model=settings.CHAT_MODEL,
+            timeout=60,
+        )
+        if enriched and len(enriched) == len(chunks):
+            chunks = enriched
+    except Exception:
+        pass
+
+    return chunks
+
+
 @app.post("/ingest/text")
 async def ingest_text(inp: IngestTextIn, _: bool = Depends(check_api_key)):
     collection = resolve_collection(inp.collection)
-    chunks = [(t, {"source": "text", **(inp.meta or {})})
-              for t in chunk_text(inp.text, inp.chunk_tokens, inp.overlap_tokens)]
+    chunk_texts = select_chunks_for_ingest(
+        inp.text,
+        inp.chunks,
+        chunk_tokens=inp.chunk_tokens,
+        overlap_tokens=inp.overlap_tokens,
+    )
+    if not chunk_texts:
+        raise HTTPException(400, "No text content to ingest")
+    chunks = [(t, {"source": "text", **(inp.meta or {})}) for t in chunk_texts]
     ids = await memorize_chunks(chunks, collection=collection)
     return {"status": "ok", "chunks": len(ids), "ids": ids[:5]}
 
@@ -130,7 +174,13 @@ async def ingest_file(file: UploadFile = File(...),
     else:
         raise HTTPException(415, f"Unsupported content-type: {ct} (filename={file.filename})")
 
-    chunks = [(t, meta) for t in chunk_text(text, chunk_tokens, overlap_tokens)]
+    chunk_texts = select_chunks_for_ingest(
+        text,
+        None,
+        chunk_tokens=chunk_tokens,
+        overlap_tokens=overlap_tokens,
+    )
+    chunks = [(t, meta) for t in chunk_texts]
     if not chunks:
         raise HTTPException(400, "No text extracted/chunked")
     target_collection = resolve_collection(collection)
