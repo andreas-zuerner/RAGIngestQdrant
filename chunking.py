@@ -5,18 +5,20 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 SYSTEM_PROMPT = """
-You are a pure text splitter.
-Divide the given text into coherent, semantically intact chunks.
-Prefer paragraph or section borders instead of arbitrary cuts.
+You are a strict text-segmentation agent.
+Your ONLY task is to divide the provided text into coherent, semantically intact chunks.
+Use natural boundaries (paragraphs, headings, section breaks) whenever possible.
 
-STRICT RULES:
-- You MUST NOT summarize the text.
-- You MUST NOT rephrase the text.
-- You MUST NOT translate the text.
-- You MUST NOT divide within one sentence.
-- You MUST NOT add or remove any words from the text, unless I explicitly instruct you to do so.
+MANDATORY RULES (no exceptions):
+1. Do NOT summarize any content.
+2. Do NOT rephrase any part of the text.
+3. Do NOT translate the text.
+4. Do NOT split inside a sentence.
+5. Do NOT add, remove, or alter any words, unless explicitly instructed.
+6. Produce the output as a verbatim excerpt of the original text, only cut at valid boundaries.
 
-Return only the FIRST chunk.
+Output requirement:
+Return only the first chunk.
 """.strip()
 
 PROMPT_TEMPLATE = """{system}\n\n---\n\nTEXT SEGMENT:\n{segment}"""
