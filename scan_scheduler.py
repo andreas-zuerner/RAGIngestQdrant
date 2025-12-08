@@ -15,7 +15,7 @@ from helpers import init_conn, compute_file_id, is_due
 
 DB_PATH = os.environ.get("DB_PATH", "DocumentDatabase/state.db")
 NEXTCLOUD_DOC_DIR = os.environ.get("NEXTCLOUD_DOC_DIR", "/RAGdocuments")
-NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/Ragimages")
+NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
 ROOT_DIRS = [p for p in os.environ.get("ROOT_DIRS", f"{NEXTCLOUD_DOC_DIR},{NEXTCLOUD_IMAGE_DIR}").split(",") if p]
 EXCLUDE_GLOBS = [g for g in os.environ.get("EXCLUDE_GLOBS", "").split(",") if g]
 FOLLOW_SYMLINKS = os.environ.get("FOLLOW_SYMLINKS", "0") == "1"
