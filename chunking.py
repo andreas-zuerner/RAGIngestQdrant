@@ -25,6 +25,7 @@ MATCH_KEY_DEFAULT_LEN = 100
 MATCH_KEY_MIN_LEN = 30
 LONG_CHUNK_RATIO = 0.9
 OVERLAP_RATIO = 0.2
+LONG_CHUNK_NEXT_OVERLAP_RATIO = 0.05
 
 
 @dataclass
@@ -232,6 +233,8 @@ def _chunk_full_text(
         half_window_retry = False
         overlap_mode = False
         overlap_len = 0
+        applied_overlap_mode = False
+        applied_overlap_len = 0
         manual_end_pos: Optional[int] = None
         chunk_len2: Optional[int] = None
         ratio2: Optional[float] = None
@@ -305,6 +308,19 @@ def _chunk_full_text(
         offset_after = end_pos
         content = full_text[offset_before:end_pos]
 
+        if not overlap_mode:
+            effective_ratio = (
+                (len(content) / effective_window_size) if effective_window_size else 0.0
+            )
+            if effective_ratio >= LONG_CHUNK_RATIO:
+                proposed_overlap = int(effective_window_size * LONG_CHUNK_NEXT_OVERLAP_RATIO)
+                if proposed_overlap > 0:
+                    applied_overlap_mode = True
+                    applied_overlap_len = proposed_overlap
+        else:
+            applied_overlap_mode = overlap_mode and overlap_len > 0
+            applied_overlap_len = overlap_len if overlap_len > 0 else 0
+
         debug = ChunkDebug(
             iteration=iterations,
             offset_before=offset_before,
@@ -323,8 +339,8 @@ def _chunk_full_text(
             halfWindowSize=effective_window_size,
             secondChunkLen=chunk_len2,
             secondRatio=ratio2,
-            overlapMode=overlap_mode,
-            overlapLen=overlap_len,
+            overlapMode=applied_overlap_mode,
+            overlapLen=applied_overlap_len,
             longChunkRatio=LONG_CHUNK_RATIO,
         )
 
@@ -340,8 +356,8 @@ def _chunk_full_text(
         )
 
         chunk_index += 1
-        if overlap_mode and overlap_len > 0:
-            next_offset = end_pos - overlap_len
+        if applied_overlap_mode and applied_overlap_len > 0:
+            next_offset = end_pos - applied_overlap_len
             offset = end_pos if next_offset <= offset_before else next_offset
         else:
             offset = end_pos
