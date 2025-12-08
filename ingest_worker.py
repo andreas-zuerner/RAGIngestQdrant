@@ -408,9 +408,10 @@ class DoclingServeIngestor:
         if not file_path.exists():
             raise FileNotFoundError(file_path)
 
-        files = {"file": (file_path.name, file_path.open("rb"), "application/octet-stream")}
         try:
-            response = requests.post(self.service_url, files=files, timeout=DOCLING_SERVE_TIMEOUT)
+            with file_path.open("rb") as fp:
+                files = {"files": (file_path.name, fp, "application/octet-stream")}
+                response = requests.post(self.service_url, files=files, timeout=DOCLING_SERVE_TIMEOUT)
             response.raise_for_status()
         except requests.HTTPError as exc:
             detail = self._response_detail(exc.response)
@@ -419,7 +420,13 @@ class DoclingServeIngestor:
         except Exception as exc:
             raise DoclingUnavailableError(f"docling-serve request failed: {exc}") from exc
 
-        payload = response.json()
+        try:
+            payload = response.json()
+        except Exception as exc:
+            detail = self._response_detail(response)
+            suffix = f"; {detail}" if detail else ""
+            raise RuntimeError(f"docling-serve returned invalid JSON{suffix}") from exc
+
         text = self._extract_text(payload)
         images_payload = payload.get("images") or payload.get("media", {}).get("images") or []
         stored_images = self._store_images(images_payload, slugify(file_path.stem))
@@ -433,7 +440,9 @@ class DoclingServeIngestor:
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
                 return value
-        raise RuntimeError("docling-serve response did not contain textual content")
+        detail = self._payload_detail(payload)
+        suffix = f"; {detail}" if detail else ""
+        raise RuntimeError(f"docling-serve response did not contain textual content{suffix}")
 
     def _store_images(self, images_payload, base_slug: str) -> List[Dict[str, object]]:
         stored: List[Dict[str, object]] = []
@@ -550,6 +559,18 @@ class DoclingServeIngestor:
         if len(detail) > 500:
             detail = detail[:500] + "…"
         return detail
+
+    def _payload_detail(self, payload: Optional[Dict[str, object]]) -> str:
+        if not payload:
+            return ""
+        try:
+            if isinstance(payload, dict):
+                for key in ("detail", "error", "message", "status"):
+                    if payload.get(key):
+                        return str(payload.get(key))[:500]
+            return str(payload)[:500]
+        except Exception:
+            return ""
 
 
 _DOCLING_INGESTOR: Optional[DoclingServeIngestor] = None
