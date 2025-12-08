@@ -92,18 +92,27 @@ class IngestTextIn(BaseModel):
     meta: dict | None = None
     chunk_tokens: int = 800
     overlap_tokens: int = 120
+    collection: str | None = None
+
+
+def resolve_collection(name: str | None) -> str:
+    # Fallback to the original default collection when no explicit value is provided
+    clean = name.strip() if isinstance(name, str) else None
+    return clean or settings.QDRANT_COLLECTION
 
 @app.post("/ingest/text")
 async def ingest_text(inp: IngestTextIn, _: bool = Depends(check_api_key)):
+    collection = resolve_collection(inp.collection)
     chunks = [(t, {"source": "text", **(inp.meta or {})})
               for t in chunk_text(inp.text, inp.chunk_tokens, inp.overlap_tokens)]
-    ids = await memorize_chunks(chunks)
+    ids = await memorize_chunks(chunks, collection=collection)
     return {"status": "ok", "chunks": len(ids), "ids": ids[:5]}
 
 @app.post("/ingest/file")
 async def ingest_file(file: UploadFile = File(...),
                       chunk_tokens: int = 800,
                       overlap_tokens: int = 120,
+                      collection: str | None = None,
                       _: bool = Depends(check_api_key)):
     ct = (file.content_type or "").lower()
     raw = await file.read()
@@ -124,7 +133,8 @@ async def ingest_file(file: UploadFile = File(...),
     chunks = [(t, meta) for t in chunk_text(text, chunk_tokens, overlap_tokens)]
     if not chunks:
         raise HTTPException(400, "No text extracted/chunked")
-    ids = await memorize_chunks(chunks)
+    target_collection = resolve_collection(collection)
+    ids = await memorize_chunks(chunks, collection=target_collection)
     return {"status": "ok", "chunks": len(ids), "preview": ids[:5]}
 
 @app.get("/health/extended")
@@ -154,21 +164,23 @@ async def health_extended():
 TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 client = httpx.AsyncClient(timeout=TIMEOUT)
 
-async def ensure_collection():
+async def ensure_collection(collection: str | None = None):
     # 1) Ziel-Dimension bestimmen
     dims = settings.EMBED_DIMS
     if not dims:
         dims = await detect_embed_dims(settings.EMBED_MODEL)
 
+    collection_name = resolve_collection(collection)
+
     # 2) Existenz + Dimension prüfen
-    info = await client.get(f"{settings.QDRANT_URL}/collections/{settings.QDRANT_COLLECTION}")
+    info = await client.get(f"{settings.QDRANT_URL}/collections/{collection_name}")
     if info.status_code == 200:
         js = info.json()
         current = (js.get("result") or {}).get("config", {}).get("params", {}).get("vectors", {})
         current_size = (current.get("size") if isinstance(current, dict) else None)
         if current_size and int(current_size) != int(dims):
             # Harte Entscheidung: failen (sauberer) oder (optional) droppen und neu anlegen
-            raise RuntimeError(f"Collection '{settings.QDRANT_COLLECTION}' has dim {current_size}, "
+            raise RuntimeError(f"Collection '{collection_name}' has dim {current_size}, "
                                f"but embed model returns {dims}. Bitte Collection neu anlegen/leer machen.")
         return
 
@@ -178,7 +190,7 @@ async def ensure_collection():
         "optimizers_config": {"default_segment_number": 2}
     }
     cr = await client.put(
-        f"{settings.QDRANT_URL}/collections/{settings.QDRANT_COLLECTION}", json=schema
+        f"{settings.QDRANT_URL}/collections/{collection_name}", json=schema
     )
     if cr.status_code not in (200, 201):
         raise RuntimeError(f"Create collection failed: {cr.text}")
@@ -242,15 +254,17 @@ async def embed(text: str) -> list[float]:
 
     return vec
 
-async def qdrant_upsert(points: list[dict]):
+async def qdrant_upsert(points: list[dict], *, collection: str | None = None):
+    collection_name = resolve_collection(collection)
+    await ensure_collection(collection_name)
     r = await client.put(
-        f"{settings.QDRANT_URL}/collections/{settings.QDRANT_COLLECTION}/points?wait=true",
+        f"{settings.QDRANT_URL}/collections/{collection_name}/points?wait=true",
         json={"points": points}
     )
     if r.status_code not in (200, 202):
         raise HTTPException(502, f"Qdrant upsert failed: {r.text}")
 
-async def qdrant_search(vec: list[float], limit: int, score_threshold: float | None):
+async def qdrant_search(vec: list[float], limit: int, score_threshold: float | None, *, collection: str | None = None):
     body = {
         "vector": vec,
         "limit": limit,
@@ -259,8 +273,10 @@ async def qdrant_search(vec: list[float], limit: int, score_threshold: float | N
     }
     if score_threshold is not None:
         body["score_threshold"] = score_threshold
+    collection_name = resolve_collection(collection)
+    await ensure_collection(collection_name)
     r = await client.post(
-        f"{settings.QDRANT_URL}/collections/{settings.QDRANT_COLLECTION}/points/search",
+        f"{settings.QDRANT_URL}/collections/{collection_name}/points/search",
         json=body
     )
     if r.status_code != 200:
@@ -324,7 +340,7 @@ async def chat(inp: ChatIn, _: bool = Depends(check_api_key)):
     answer = await ollama_chat(system=system, user=inp.prompt)
     return {"answer": answer, "memory_hits": len(hits)}
 
-async def memorize_chunks(chunks: list[tuple[str, dict]]):
+async def memorize_chunks(chunks: list[tuple[str, dict]], *, collection: str | None = None):
     points = []
     for text, meta in chunks:
         vec = await embed(text)
@@ -335,7 +351,7 @@ async def memorize_chunks(chunks: list[tuple[str, dict]]):
             "payload": {"text": text, "meta": meta or {}, "ts": int(time.time())}
         })
     # Upsert (idempotent)
-    await qdrant_upsert(points)
+    await qdrant_upsert(points, collection=collection)
     return [p["id"] for p in points]
 
 class DeleteIn(BaseModel):

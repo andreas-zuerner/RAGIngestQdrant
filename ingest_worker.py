@@ -141,6 +141,7 @@ def safe_log(conn, job_id, file_id, step, detail):
 DB_PATH              = os.environ.get("DB_PATH", "DocumentDatabase/state.db")
 BRAIN_URL            = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
 BRAIN_API_KEY        = os.environ.get("BRAIN_API_KEY", "change-me")
+BRAIN_COLLECTION     = os.environ.get("BRAIN_COLLECTION", "documents")
 BRAIN_CHUNK_TOKENS   = int(os.environ.get("BRAIN_CHUNK_TOKENS", "400"))
 BRAIN_OVERLAP_TOKENS = int(os.environ.get("BRAIN_OVERLAP_TOKENS", "80"))
 BRAIN_REQUEST_TIMEOUT = float(os.environ.get("BRAIN_REQUEST_TIMEOUT", "120"))
@@ -799,6 +800,7 @@ def brain_ingest_text(
     *,
     chunk_tokens: int | None = None,
     overlap_tokens: int | None = None,
+    collection: str | None = None,
     timeout: float = 30,
 ):
     from datetime import datetime
@@ -812,6 +814,8 @@ def brain_ingest_text(
         payload["chunk_tokens"] = int(chunk_tokens)
     if overlap_tokens is not None:
         payload["overlap_tokens"] = int(overlap_tokens)
+    if collection:
+        payload["collection"] = collection
 
     # Optional: pre-log in DB for Nachvollziehbarkeit
     try:
@@ -1055,6 +1059,7 @@ def process_one(conn, job_id, file_id):
                     meta=chunk_meta,
                     chunk_tokens=BRAIN_CHUNK_TOKENS,
                     overlap_tokens=BRAIN_OVERLAP_TOKENS,
+                    collection=BRAIN_COLLECTION,
                     timeout=BRAIN_REQUEST_TIMEOUT,
                 )
                 if ok:
