@@ -1,154 +1,365 @@
-import json
-import textwrap
-from typing import List
+import dataclasses
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+SYSTEM_PROMPT = """
+You are a pure text splitter. Divide the given text into coherent, semantically intact chunks.
 
-class ChunkingError(RuntimeError):
-    """Raised when LLM-based chunking fails."""
+STRICT RULES:
+- You MUST NOT summarize the text.
+- You MUST NOT rephrase the text.
+- You MUST NOT translate the text.
+- You MUST NOT add or remove any words from the text, unless I explicitly instruct you to do so.
 
-    def __init__(self, message: str, *, raw_response: str | None = None):
-        super().__init__(message)
-        self.raw_response = raw_response
+Return only the FIRST chunk.
+""".strip()
+
+PROMPT_TEMPLATE = """{system}\n\n---\n\nTEXT SEGMENT:\n{segment}"""
+
+WINDOW_SIZE_CHARS = 5000
+MAX_ITERATIONS = 500
+MIN_CHUNK_LEN = 500
+MATCH_KEY_DEFAULT_LEN = 100
+MATCH_KEY_MIN_LEN = 30
+LONG_CHUNK_RATIO = 0.9
+OVERLAP_RATIO = 0.2
 
 
-def _approx_chars(token_count: int) -> int:
-    return max(token_count * 4, 1)
+@dataclass
+class ChunkDebug:
+    iteration: int
+    offset_before: int
+    offset_after: int
+    windowStart: int
+    windowEnd: int
+    windowText: str
+    chunkText: str
+    matchKey: Optional[str]
+    idxInFullText: Optional[int]
+    usedFallback: Optional[bool]
+    originalWindowSize: int
+    originalChunkLen: int
+    originalRatio: float
+    halfWindowRetry: bool
+    halfWindowSize: int
+    secondChunkLen: Optional[int]
+    secondRatio: Optional[float]
+    overlapMode: bool
+    overlapLen: int
+    longChunkRatio: float
 
 
-def _default_options():
-    return {
-        "temperature": 0,
-        "top_p": 1.0,
-        "num_ctx": 8192,
+@dataclass
+class Chunk:
+    chunk_id: int
+    start: int
+    end: int
+    content: str
+    fullText: str
+    fileName: Optional[str] = None
+    filePath: Optional[str] = None
+    debug: Dict[str, Any] = field(default_factory=dict)
+
+
+def _clean_text_for_match(text: str) -> str:
+    """Normalize text for deterministic matching while keeping length stable."""
+    return text.replace("\r", " ").replace("\n", " ")
+
+
+def _build_prompt(segment: str) -> str:
+    return PROMPT_TEMPLATE.format(system=SYSTEM_PROMPT, segment=segment)
+
+
+def _call_llm(window_text: str, *, ollama_host: str, model: str, timeout: float) -> str:
+    body = {
+        "model": model,
+        "prompt": _build_prompt(window_text),
+        "stream": False,
+        "options": {
+            "temperature": 0.0,
+            "num_ctx": 40960,
+            "num_predict": 1000,
+        },
     }
+    url = f"{ollama_host.rstrip('/')}/api/generate"
+    resp = requests.post(url, json=body, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    raw = data.get("response") if isinstance(data, dict) else ""
+    return str(raw or "").strip()
 
 
-def _extract_response(json_body: dict) -> str:
-    raw = (json_body or {}).get("response") or ""
-    if isinstance(raw, str):
-        return raw.strip()
-    return ""
+def _find_chunk_end(
+    prepared_full_text: str, offset: int, chunk_text: str
+) -> Optional[Tuple[int, str, int, bool]]:
+    if not chunk_text or not chunk_text.strip():
+        return None
+
+    cleaned = _clean_text_for_match(chunk_text).strip()
+    if not cleaned:
+        return None
+
+    match_key = cleaned[-MATCH_KEY_DEFAULT_LEN:].strip()
+    if len(match_key) < MATCH_KEY_MIN_LEN and len(cleaned) > MATCH_KEY_MIN_LEN:
+        match_key = cleaned[-2 * MATCH_KEY_DEFAULT_LEN :].strip()
+
+    idx = -1
+    if match_key:
+        idx = prepared_full_text.find(match_key, offset)
+
+    used_fallback = False
+    if idx != -1:
+        end_pos = idx + len(match_key)
+    else:
+        used_fallback = True
+        end_pos = offset + max(len(cleaned), MIN_CHUNK_LEN)
+
+    return end_pos, match_key, idx, used_fallback
 
 
-def _parse_chunk_payload(raw: str) -> List[str]:
-    try:
-        parsed = json.loads(raw)
-    except Exception as exc:  # noqa: BLE001
-        raise ChunkingError(f"could not parse chunk JSON: {exc}", raw_response=raw) from exc
-
-    if isinstance(parsed, list):
-        texts: List[str] = []
-        for item in parsed:
-            if isinstance(item, str):
-                candidate = item.strip()
-            elif isinstance(item, dict):
-                candidate = str(item.get("text", "")).strip()
-            else:
-                continue
-            if candidate:
-                texts.append(candidate)
-        if texts:
-            return texts
-    raise ChunkingError(
-        "chunk response did not contain any text chunks", raw_response=raw
-    )
-
-
-def _chunk_prompt(text: str, *, target_tokens: int, max_chunks: int) -> str:
-    target_chars = _approx_chars(target_tokens)
-    return textwrap.dedent(
-        f"""
-        You are a meticulous document segmenter.
-        Split the provided document into coherent, non-overlapping chunks that preserve context.
-        Aim for chunks close to {target_tokens} tokens (~{target_chars} characters) without exceeding natural boundaries.
-        Never create more than {max_chunks} chunks. Prefer paragraph or section borders instead of arbitrary cuts.
-
-        Return ONLY compact JSON: [{{"text": "chunk text", "reason": "why you cut here"}}, ...].
-        Keep the original wording. Do not summarize or paraphrase. Maintain the original order.
-
-        Document:
-        """
-    ).strip() + "\n<document>\n" + text + "\n</document>"
-
-
-def llm_chunk_document(
-    text: str,
+def _chunk_full_text(
+    full_text: str,
     *,
     ollama_host: str,
     model: str,
-    target_tokens: int = 800,
-    max_chunks: int = 20,
+    window_size: int = WINDOW_SIZE_CHARS,
     timeout: float = 120.0,
-    debug: bool = False,
-    return_debug: bool = False,
-):
-    if not text or not text.strip():
-        raise ChunkingError("empty text supplied")
-
-    prompt = _chunk_prompt(text, target_tokens=target_tokens, max_chunks=max_chunks)
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "format": "json",
-        "options": _default_options(),
-    }
-    url = f"{ollama_host.rstrip('/')}/api/generate"
-    response = requests.post(url, json=payload, timeout=timeout)
-    if debug:
-        try:
-            from pathlib import Path
-
-            dbg_dir = Path("./debug/chunking")
-            dbg_dir.mkdir(parents=True, exist_ok=True)
-            (dbg_dir / "prompt.txt").write_text(prompt[:5000], encoding="utf-8")
-            (dbg_dir / "response.txt").write_text(response.text[:5000], encoding="utf-8")
-        except Exception:
-            pass
-
-    response.raise_for_status()
-    response_json = response.json()
-    raw = _extract_response(response_json)
-    chunks = _parse_chunk_payload(raw)
-
-    debug_info = {
-        "ollama_host": ollama_host,
-        "model": model,
-        "target_tokens": target_tokens,
-        "max_chunks": max_chunks,
-        "prompt_chars": len(prompt),
-        "response_chars": len(raw),
-        "status": response.status_code,
-    }
-    if return_debug:
-        return chunks, debug_info
-    return chunks
-
-
-def fallback_chunk_document(
-    text: str,
-    *,
-    chunk_size_chars: int,
-    overlap_chars: int,
-    max_chunks: int,
-) -> List[str]:
-    if not text or not text.strip():
+) -> List[Chunk]:
+    if not full_text or not full_text.strip():
         return []
-    step = max(chunk_size_chars - overlap_chars, 1)
-    chunks: List[str] = []
-    idx = 0
-    while idx < len(text):
-        if max_chunks and len(chunks) >= max_chunks:
+
+    prepared_full_text = _clean_text_for_match(full_text)
+
+    offset = 0
+    chunk_index = 1
+    iterations = 0
+    chunks: List[Chunk] = []
+
+    while offset < len(full_text) and iterations < MAX_ITERATIONS:
+        iterations += 1
+        offset_before = offset
+
+        window_start1 = offset_before
+        window_end1 = min(offset_before + window_size, len(full_text))
+        window_text1 = full_text[window_start1:window_end1]
+        window_size1 = window_end1 - window_start1
+
+        if not window_text1.strip():
             break
-        end = min(idx + chunk_size_chars, len(text))
-        chunk_text = text[idx:end].strip()
-        if chunk_text:
-            chunks.append(chunk_text)
-        idx += step
-    if not chunks:
-        chunks = [text.strip()]
+
+        try:
+            chunk_text1 = _call_llm(window_text1, ollama_host=ollama_host, model=model, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001
+            debug = ChunkDebug(
+                iteration=iterations,
+                offset_before=offset_before,
+                offset_after=offset_before,
+                windowStart=window_start1,
+                windowEnd=window_end1,
+                windowText=window_text1,
+                chunkText="",
+                matchKey=None,
+                idxInFullText=None,
+                usedFallback=None,
+                originalWindowSize=window_size1,
+                originalChunkLen=0,
+                originalRatio=0.0,
+                halfWindowRetry=False,
+                halfWindowSize=0,
+                secondChunkLen=None,
+                secondRatio=None,
+                overlapMode=False,
+                overlapLen=0,
+                longChunkRatio=LONG_CHUNK_RATIO,
+            )
+            chunks.append(
+                Chunk(
+                    chunk_id=chunk_index,
+                    start=offset_before,
+                    end=offset_before,
+                    content="",
+                    fullText=full_text,
+                    debug={"error": str(exc), "detail": dataclasses.asdict(debug)},
+                )
+            )
+            break
+
+        if not chunk_text1.strip():
+            debug = ChunkDebug(
+                iteration=iterations,
+                offset_before=offset_before,
+                offset_after=offset_before,
+                windowStart=window_start1,
+                windowEnd=window_end1,
+                windowText=window_text1,
+                chunkText=chunk_text1,
+                matchKey=None,
+                idxInFullText=None,
+                usedFallback=None,
+                originalWindowSize=window_size1,
+                originalChunkLen=0,
+                originalRatio=0.0,
+                halfWindowRetry=False,
+                halfWindowSize=0,
+                secondChunkLen=None,
+                secondRatio=None,
+                overlapMode=False,
+                overlapLen=0,
+                longChunkRatio=LONG_CHUNK_RATIO,
+            )
+            chunks.append(
+                Chunk(
+                    chunk_id=chunk_index,
+                    start=offset_before,
+                    end=offset_before,
+                    content="",
+                    fullText=full_text,
+                    debug={"error": "Empty LLM response", "detail": dataclasses.asdict(debug)},
+                )
+            )
+            break
+
+        chunk_len1 = len(chunk_text1)
+        ratio1 = (chunk_len1 / window_size1) if window_size1 else 0.0
+
+        effective_window_start = window_start1
+        effective_window_end = window_end1
+        effective_window_text = window_text1
+        effective_chunk_text = chunk_text1
+        effective_window_size = window_size1
+        half_window_retry = False
+        overlap_mode = False
+        overlap_len = 0
+        manual_end_pos: Optional[int] = None
+        chunk_len2: Optional[int] = None
+        ratio2: Optional[float] = None
+
+        if ratio1 > LONG_CHUNK_RATIO and window_size1 > MIN_CHUNK_LEN * 2:
+            half_window_retry = True
+            half_window_size = int(window_size1 * 0.5)
+            window_start2 = offset_before
+            window_end2 = min(offset_before + half_window_size, len(full_text))
+            window_text2 = full_text[window_start2:window_end2]
+            actual_half_size = window_end2 - window_start2
+
+            try:
+                chunk_text2 = _call_llm(
+                    window_text2, ollama_host=ollama_host, model=model, timeout=timeout
+                )
+            except Exception:
+                chunk_text2 = ""
+
+            if chunk_text2 and chunk_text2.strip():
+                chunk_len2 = len(chunk_text2)
+                ratio2 = (chunk_len2 / actual_half_size) if actual_half_size else 0.0
+
+                if ratio2 > LONG_CHUNK_RATIO:
+                    overlap_mode = True
+                    overlap_len = int(window_size * OVERLAP_RATIO)
+                    manual_end_pos = offset_before + actual_half_size + overlap_len
+                    manual_end_pos = min(manual_end_pos, len(full_text))
+                    effective_window_start = window_start2
+                    effective_window_end = window_end2
+                    effective_window_text = window_text2
+                    effective_chunk_text = chunk_text2
+                    effective_window_size = actual_half_size
+                else:
+                    effective_window_start = window_start2
+                    effective_window_end = window_end2
+                    effective_window_text = window_text2
+                    effective_chunk_text = chunk_text2
+                    effective_window_size = actual_half_size
+            # if second try fails, fall back to first attempt
+
+        end_pos: int
+        match_key: Optional[str]
+        idx: int
+        used_fallback_match: bool
+
+        if not overlap_mode:
+            match = _find_chunk_end(prepared_full_text, offset_before, effective_chunk_text)
+            if match:
+                end_pos, match_key, idx, used_fallback_match = match
+            else:
+                used_fallback_match = True
+                match_key = None
+                idx = -1
+                end_pos = offset_before + min(
+                    effective_window_size, max(len(effective_chunk_text), MIN_CHUNK_LEN)
+                )
+        else:
+            end_pos = manual_end_pos if manual_end_pos is not None else offset_before + effective_window_size
+            match_key = None
+            idx = -1
+            used_fallback_match = True
+
+        if end_pos <= offset_before:
+            used_fallback_match = True
+            end_pos = min(offset_before + MIN_CHUNK_LEN, len(full_text))
+        if end_pos > len(full_text):
+            used_fallback_match = True
+            end_pos = len(full_text)
+
+        offset_after = end_pos
+        content = full_text[offset_before:end_pos]
+
+        debug = ChunkDebug(
+            iteration=iterations,
+            offset_before=offset_before,
+            offset_after=offset_after,
+            windowStart=effective_window_start,
+            windowEnd=effective_window_end,
+            windowText=effective_window_text,
+            chunkText=effective_chunk_text,
+            matchKey=match_key,
+            idxInFullText=idx,
+            usedFallback=used_fallback_match,
+            originalWindowSize=window_size1,
+            originalChunkLen=chunk_len1,
+            originalRatio=ratio1,
+            halfWindowRetry=half_window_retry,
+            halfWindowSize=effective_window_size,
+            secondChunkLen=chunk_len2,
+            secondRatio=ratio2,
+            overlapMode=overlap_mode,
+            overlapLen=overlap_len,
+            longChunkRatio=LONG_CHUNK_RATIO,
+        )
+
+        chunks.append(
+            Chunk(
+                chunk_id=chunk_index,
+                start=offset_before,
+                end=end_pos,
+                content=content,
+                fullText=full_text,
+                debug=dataclasses.asdict(debug),
+            )
+        )
+
+        chunk_index += 1
+        if overlap_mode and overlap_len > 0:
+            next_offset = end_pos - overlap_len
+            offset = end_pos if next_offset <= offset_before else next_offset
+        else:
+            offset = end_pos
+
+    if offset < len(full_text):
+        tail_start = offset
+        tail_end = len(full_text)
+        chunks.append(
+            Chunk(
+                chunk_id=chunk_index,
+                start=tail_start,
+                end=tail_end,
+                content=full_text[tail_start:tail_end],
+                fullText=full_text,
+                debug={"tail": True, "tailStart": tail_start, "tailEnd": tail_end},
+            )
+        )
+
     return chunks
 
 
@@ -157,61 +368,25 @@ def chunk_document_with_llm_fallback(
     *,
     ollama_host: str,
     model: str,
-    target_tokens: int,
-    overlap_chars: int,
-    max_chunks: int,
-    timeout: float,
+    target_tokens: int = 1000,
+    overlap_chars: int = 0,
+    max_chunks: Optional[int] = None,
+    timeout: float = 120.0,
     debug: bool = False,
     return_debug: bool = False,
-):
-    metadata = {
-        "llm_attempted": True,
-        "fallback_used": False,
+) -> Tuple[List[str], Dict[str, Any]]:
+    window_size = max(int(target_tokens * 4), WINDOW_SIZE_CHARS)
+    chunks = _chunk_full_text(text, ollama_host=ollama_host, model=model, window_size=window_size, timeout=timeout)
+    if max_chunks:
+        chunks = chunks[:max_chunks]
+    chunk_texts = [c.content for c in chunks]
+    metadata: Dict[str, Any] = {
         "chunk_source": "llm",
+        "llm_window_size": window_size,
+        "chunks": len(chunk_texts),
     }
-    try:
-        chunks, debug_info = llm_chunk_document(
-            text,
-            ollama_host=ollama_host,
-            model=model,
-            target_tokens=target_tokens,
-            max_chunks=max_chunks,
-            timeout=timeout,
-            debug=debug,
-            return_debug=True,
-        )
-        metadata["llm_info"] = debug_info
-        metadata["chunks"] = len(chunks)
-        if return_debug:
-            return chunks, metadata
-        return chunks
-    except Exception as exc:
-        chunk_chars = _approx_chars(target_tokens)
-        fallback = fallback_chunk_document(
-            text,
-            chunk_size_chars=chunk_chars,
-            overlap_chars=overlap_chars,
-            max_chunks=max_chunks,
-        )
-        metadata.update(
-            {
-                "fallback_used": True,
-                "chunk_source": "fallback",
-                "fallback_chunk_size": chunk_chars,
-                "chunks": len(fallback),
-                "llm_error": str(exc),
-            }
-        )
-        llm_response = None
-        if isinstance(exc, ChunkingError):
-            llm_response = getattr(exc, "raw_response", None)
-        elif hasattr(exc, "response"):
-            try:
-                llm_response = getattr(exc.response, "text", None)
-            except Exception:
-                llm_response = None
-        if llm_response:
-            metadata["llm_response"] = str(llm_response)[:1000]
-        if return_debug:
-            return fallback, metadata
-        return fallback
+    if debug:
+        metadata["raw_chunks"] = [dataclasses.asdict(c) for c in chunks]
+    if return_debug:
+        return chunk_texts, metadata
+    return chunk_texts, metadata
