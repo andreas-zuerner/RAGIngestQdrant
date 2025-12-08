@@ -436,10 +436,21 @@ class DoclingServeIngestor:
         return DoclingExtraction(text=text_with_refs, mime_type=mime, chunks=chunks, images=stored_images)
 
     def _extract_text(self, payload: Dict[str, object]) -> str:
+        # 1) Neues docling-Schema: Text liegt in payload["document"][...]
+        doc = payload.get("document")
+        if isinstance(doc, dict):
+            for key in ("md_content", "text_content", "html_content", "json_content"):
+                value = doc.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+
+        # 2) Fallback: ältere / alternative Schemas auf Top-Level
         for key in ("text", "markdown", "content", "body"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
                 return value
+
+        # 3) Wenn immer noch nichts gefunden: wie bisher Fehler werfen
         detail = self._payload_detail(payload)
         suffix = f"; {detail}" if detail else ""
         raise RuntimeError(f"docling-serve response did not contain textual content{suffix}")
