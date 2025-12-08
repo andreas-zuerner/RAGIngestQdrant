@@ -4,6 +4,7 @@ import base64
 import importlib
 import json
 import mimetypes
+import re
 import os
 import posixpath
 import sqlite3
@@ -428,8 +429,14 @@ class DoclingServeIngestor:
             raise RuntimeError(f"docling-serve returned invalid JSON{suffix}") from exc
 
         text = self._extract_text(payload)
+        base_slug = slugify(file_path.stem)
+
+        text, inline_images = self._extract_inline_images(text, base_slug)
         images_payload = payload.get("images") or payload.get("media", {}).get("images") or []
-        stored_images = self._store_images(images_payload, slugify(file_path.stem))
+        stored_images = self._store_images(images_payload, base_slug)
+        if inline_images:
+            stored_images.extend(self._store_images(inline_images, base_slug))
+
         text_with_refs = self._inject_image_refs(text, stored_images)
         mime = payload.get("media_type") or payload.get("mime_type")
         chunks = self._chunk_text(text_with_refs)
@@ -516,6 +523,44 @@ class DoclingServeIngestor:
             return ""
         ext = mimetypes.guess_extension(mime)
         return ext or ""
+
+    def _extract_inline_images(self, text: str, base_slug: str) -> Tuple[str, List[Dict[str, object]]]:
+        if not text:
+            return text or "", []
+
+        pattern = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<data>data:image/[^)]+)\)")
+        matches = list(pattern.finditer(text))
+        if not matches:
+            return text, []
+
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        items: List[Dict[str, object]] = []
+        item_indices: List[Optional[int]] = []
+        for idx, match in enumerate(matches, start=1):
+            data_uri = match.group("data")
+            if not data_uri.lower().startswith("data:image/"):
+                item_indices.append(None)
+                continue
+            identifier = f"{base_slug}_{timestamp}_{idx}.png"
+            items.append({"name": identifier, "data": data_uri, "mime": "image/png"})
+            item_indices.append(len(items) - 1)
+
+        stored_images = self._store_images(items, base_slug) if items else []
+        last_end = 0
+        cleaned_parts: List[str] = []
+
+        for idx, match in enumerate(matches, start=1):
+            cleaned_parts.append(text[last_end:match.start()])
+            item_idx = item_indices[idx - 1] if idx - 1 < len(item_indices) else None
+            stored = stored_images[item_idx] if item_idx is not None and item_idx < len(stored_images) else None
+            fallback_label = items[item_idx]["name"] if item_idx is not None and item_idx < len(items) else f"{base_slug}_{timestamp}_{idx}.png"
+            target = stored.get("label") if stored else fallback_label
+            alt_text = match.group("alt") or "image"
+            cleaned_parts.append(f"![{alt_text}]({target})")
+            last_end = match.end()
+
+        cleaned_parts.append(text[last_end:])
+        return "".join(cleaned_parts), stored_images
 
     def _inject_image_refs(self, text: str, images: List[Dict[str, object]]) -> str:
         if not images:
