@@ -95,6 +95,7 @@ def find_by_content_hash(conn, content_hash: str, new_path: Path):
                 # Broken path -> treat as rename candidate
                 return row
     return None
+    
 def mark_deleted(conn, fid: str) -> bool:
     cur = conn.execute(
         """
