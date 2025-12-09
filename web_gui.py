@@ -18,12 +18,12 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("WEB_GUI_SECRET", "dev-secret")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-LOG_PATH = Path(os.environ.get("SCHEDULER_LOG", PROJECT_ROOT / "logs/scan_scheduler.log"))
+LOG_PATH = Path(os.environ.get("SCHEDULER_LOG", PROJECT_ROOT / "log/scan_scheduler.log"))
 DB_PATH = Path(os.environ.get("DB_PATH", PROJECT_ROOT / "DocumentDatabase/state.db"))
 ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
 EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.example"))
 
-DEBUG = os.environ.get("DEBUG", "0") == "1"
+WEB_GUI_DEBUG = os.environ.get("WEB_GUI_DEBUG", "false").lower() in {"1", "true", "yes"}
 
 BRAIN_URL = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
 BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
@@ -33,13 +33,13 @@ NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
 
 
 def log_debug(msg: str):
-    if not DEBUG:
+    if not WEB_GUI_DEBUG:
         return
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with LOG_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(f"[web_gui] {ts} {msg}\n")
+            fh.write(f"[{ts}] [Web_GUI] {msg}\n")
     except Exception:
         pass
 

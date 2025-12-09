@@ -55,7 +55,7 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
    ./brain_scan.sh stop
    ```
 
-   Die Konsolen-Ausgabe befindet sich in `logs/scan_scheduler.log`.
+   Die Konsolen-Ausgabe befindet sich in `log/scan_scheduler.log`.
 
 ## LLM-Modellwahl pro Verarbeitungsschritt
 
