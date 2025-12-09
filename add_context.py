@@ -41,6 +41,7 @@ class ChunkItem:
 
 
 def _extract_image_refs(text: str) -> List[str]:
+    """Parse the chunk text and return unique inline image markers like `[IMAGE:name]`."""
     if not text or not isinstance(text, str):
         return []
     regex = re.compile(r"\[IMAGE:([^\]]+)\]")
@@ -53,6 +54,7 @@ def _extract_image_refs(text: str) -> List[str]:
 
 
 def _reconstruct_full_text(chunks: List[ChunkItem]) -> str:
+    """Rebuild the best-effort full document text from individual chunks."""
     ordered = sorted(
         chunks,
         key=lambda c: (
@@ -60,10 +62,13 @@ def _reconstruct_full_text(chunks: List[ChunkItem]) -> str:
             c.chunk_id if isinstance(c.chunk_id, int) else 0,
         ),
     )
-    return "".join(c.content or "" for c in ordered)
+    # Join with newlines to avoid accidentally gluing words together when chunk
+    # boundaries are based on offsets without explicit separators.
+    return "\n\n".join(c.content or "" for c in ordered)
 
 
 def _call_llm(full_doc: str, chunk_text: str, *, ollama_host: str, model: str, timeout: float) -> str:
+    """Send the document + chunk to the LLM and return the generated context."""
     prompt = PROMPT_TEMPLATE.format(
         system=SYSTEM_PROMPT,
         document=full_doc,
@@ -95,6 +100,7 @@ def _call_llm(full_doc: str, chunk_text: str, *, ollama_host: str, model: str, t
 
 
 def _sort_chunks(items: List[ChunkItem]) -> List[ChunkItem]:
+    """Sort chunks by their start offset and chunk id for deterministic processing."""
     return sorted(
         items,
         key=lambda c: (
@@ -112,6 +118,7 @@ def add_context_to_chunks(
     timeout: float = 120.0,
     debug: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
+    """Annotate chunks with LLM-generated context paragraphs and rich metadata."""
     chunks = [ChunkItem(chunk_id=i.get("chunk_id", idx + 1), start=i.get("start"), end=i.get("end"), content=i.get("content") or i.get("text") or "", fullText=i.get("fullText"), fileName=i.get("fileName") or i.get("filename"), filePath=i.get("filePath") or i.get("filepath"), debug=i.get("debug", debug)) for idx, i in enumerate(items)]
 
     if not chunks:
@@ -121,7 +128,8 @@ def add_context_to_chunks(
     document_name = first.fileName
     document_path = first.filePath
 
-    full_doc = first.fullText or _reconstruct_full_text(chunks)
+    full_doc_candidates = [c.fullText for c in chunks if c.fullText]
+    full_doc = full_doc_candidates[0] if full_doc_candidates else _reconstruct_full_text(chunks)
     if not isinstance(full_doc, str):
         full_doc = str(full_doc or "")
 
@@ -138,7 +146,7 @@ def add_context_to_chunks(
                 {
                     "text": chunk_text,
                     "meta": {
-                        "source": "python",
+                        "source": "RAGIngestQdrant",
                         "document_name": document_name,
                         "document_path": document_path,
                         "chunk_id": chunk.chunk_id or (idx + 1),
@@ -159,7 +167,7 @@ def add_context_to_chunks(
                 {
                     "text": chunk_text,
                     "meta": {
-                        "source": "python",
+                        "source": "RAGIngestQdrant",
                         "document_name": document_name,
                         "document_path": document_path,
                         "chunk_id": chunk.chunk_id or (idx + 1),
@@ -178,7 +186,7 @@ def add_context_to_chunks(
             {
                 "text": combined_text,
                 "meta": {
-                    "source": "python",
+                    "source": "RAGIngestQdrant",
                     "document_name": document_name,
                     "document_path": document_path,
                     "chunk_id": chunk.chunk_id or (idx + 1),
@@ -203,6 +211,7 @@ def enrich_chunks_with_context(
     timeout: float = 120.0,
     debug: Optional[Any] = None,
 ) -> List[str]:
+    """Convenience wrapper to enrich plain chunk strings with generated context."""
     items = [
         {
             "chunk_id": idx + 1,
