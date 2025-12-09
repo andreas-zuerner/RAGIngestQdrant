@@ -22,7 +22,7 @@ DB_PATH = Path(os.environ.get("DB_PATH", PROJECT_ROOT / "DocumentDatabase/state.
 ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
 EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.example"))
 
-BRAIN_URL = os.environ.get("BRAIN_URL", "http://localhost:8000")
+BRAIN_URL = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
 BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
 
 
