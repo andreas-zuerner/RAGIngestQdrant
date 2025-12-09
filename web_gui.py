@@ -1,10 +1,10 @@
 import json
 import os
-import posixpath
 import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
 import requests
 from flask import Flask, flash, redirect, render_template, request, url_for
@@ -24,6 +24,8 @@ EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.exam
 
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "personal_memory")
+BRAIN_URL = os.environ.get("BRAIN_URL", "http://localhost:8000")
+BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY")
 
 NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
 
@@ -76,6 +78,18 @@ def current_env() -> Dict[str, str]:
     return merged
 
 
+def _brain_headers() -> Dict[str, str]:
+    headers: Dict[str, str] = {}
+    if BRAIN_API_KEY:
+        headers["x-api-key"] = BRAIN_API_KEY
+    return headers
+
+
+def _brain_post(path: str, payload: dict | None = None) -> requests.Response:
+    url = urljoin(BRAIN_URL.rstrip("/") + "/", path.lstrip("/"))
+    return requests.post(url, json=payload or {}, headers=_brain_headers(), timeout=30)
+
+
 def qdrant_scroll_by_name(substring: str, limit: int = 200) -> List[dict]:
     results: List[dict] = []
     page = None
@@ -108,20 +122,51 @@ def qdrant_scroll_by_name(substring: str, limit: int = 200) -> List[dict]:
     return results
 
 
+def qdrant_ids_for_file(file_id: str, limit: int = 500) -> List[str | int]:
+    ids: List[str | int] = []
+    page = None
+    payload_filter = {"must": [{"key": "meta.file_id", "match": {"value": file_id}}]}
+    while True:
+        body = {
+            "limit": min(limit, 64),
+            "with_payload": False,
+            "offset": page,
+            "filter": payload_filter,
+        }
+        r = requests.post(
+            f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/scroll",
+            json=body,
+            timeout=30,
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"Qdrant scroll failed: {r.status_code} {r.text}")
+        data = r.json().get("result", {})
+        points = data.get("points", [])
+        ids.extend([p.get("id") for p in points if p.get("id") is not None])
+        if len(ids) >= limit:
+            return ids[:limit]
+        page = data.get("next_page_offset")
+        if not page:
+            break
+    return ids
+
+
 def delete_qdrant_entries(file_id: str) -> str:
-    payload_filter = {
-        "must": [
-            {"key": "meta.file_id", "match": {"value": file_id}},
-        ]
-    }
-    r = requests.post(
-        f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/delete?wait=true",
-        json={"filter": payload_filter},
-        timeout=30,
-    )
+    try:
+        ids = qdrant_ids_for_file(file_id)
+    except Exception as exc:
+        return f"Failed to locate items for deletion: {exc}"
+
+    if not ids:
+        return "No matching Qdrant entries found."
+
+    r = _brain_post("/admin/delete", {"ids": ids})
     if r.status_code not in (200, 202):
-        return f"Qdrant deletion failed: {r.status_code} {r.text}"
-    return "Qdrant entries removed (if present)."
+        return (
+            "Brain deletion failed: "
+            f"{r.status_code} {r.text or r.content.decode('utf-8', errors='ignore')}"
+        )
+    return "Qdrant entries removed via brain."
 
 
 def delete_nextcloud_images(file_id: str) -> str:
@@ -180,10 +225,10 @@ def reset_state_db() -> str:
 
 
 def reset_qdrant() -> str:
-    r = requests.delete(f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}", timeout=30)
-    if r.status_code not in (200, 202, 404):
-        return f"Failed to drop collection: {r.status_code} {r.text}"
-    return "Qdrant collection dropped (will be recreated on next ingest)."
+    r = _brain_post("/admin/purge")
+    if r.status_code not in (200, 202):
+        return f"Failed to purge collection via brain: {r.status_code} {r.text}"
+    return "Qdrant collection purged via brain."
 
 
 @app.route("/")
