@@ -70,7 +70,9 @@ def read_log() -> str:
     if not LOG_PATH.exists():
         return "No log file found yet."
     try:
-        return LOG_PATH.read_text(encoding="utf-8", errors="replace")
+        lines = LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+        recent_lines = list(reversed(lines[-50:]))
+        return "\n".join(recent_lines)
     except Exception as exc:  # pragma: no cover - defensive
         return f"Failed to read log: {exc}"
 
@@ -148,7 +150,7 @@ def delete_qdrant_entries(file_id: str) -> str:
             "Brain deletion failed: "
             f"{r.status_code} {r.text or r.content.decode('utf-8', errors='ignore')}"
         )
-    return "Qdrant entries removed via brain."
+    return f"Deleted {len(ids)} Qdrant point(s): {', '.join(str(i) for i in ids)}"
 
 
 def delete_nextcloud_images(file_id: str) -> str:

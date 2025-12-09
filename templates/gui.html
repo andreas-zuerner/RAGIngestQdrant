@@ -14,6 +14,17 @@
     .flash { background: #eef5ff; border: 1px solid #b3d0ff; padding: 8px; margin-bottom: 6px; }
     .env-pair { display: flex; gap: 8px; margin-bottom: 4px; }
     .env-pair input { width: 50%; }
+    .grid-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+    .search-layout { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; align-items: start; }
+    .search-box { display: flex; flex-direction: column; gap: 8px; }
+    .results-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+    .result-item { width: 100%; text-align: left; border: 1px solid #d6d6d6; background: #f8fafc; border-radius: 6px; padding: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; }
+    .result-item:hover { border-color: #8ab4f8; background: #eef3ff; }
+    .result-title { font-weight: bold; }
+    .result-sub { color: #4a5568; font-size: 0.9em; }
+    .detail-panel { border: 1px solid #d6d6d6; border-radius: 8px; padding: 12px; background: #fdfefe; min-height: 220px; white-space: pre-wrap; word-break: break-word; }
+    .detail-header { font-weight: bold; margin-bottom: 6px; }
+    .textarea-log { height: 280px; }
   </style>
 </head>
 <body>
@@ -24,48 +35,63 @@
     {% endif %}
   {% endwith %}
 
-  <section>
-    <h2>Scheduler</h2>
-    <form method="post" action="{{ url_for('start_scheduler') }}">
-      <button type="submit">Start scheduler</button>
-    </form>
-    <form method="post" action="{{ url_for('stop_scheduler') }}">
-      <button type="submit">Stop scheduler</button>
-    </form>
-  </section>
+  <div class="grid-two">
+    <section>
+      <h2>Scheduler</h2>
+      <form method="post" action="{{ url_for('start_scheduler') }}">
+        <button type="submit">Start scheduler</button>
+      </form>
+      <form method="post" action="{{ url_for('stop_scheduler') }}">
+        <button type="submit">Stop scheduler</button>
+      </form>
+    </section>
 
-  <section>
-    <h2>Log</h2>
-    <form method="post" action="{{ url_for('reload_log') }}">
-      <button type="submit">Reload log</button>
-    </form>
-    <textarea readonly>{{ log_preview }}</textarea>
-  </section>
+    <section>
+      <h2>Log (latest 50 lines, newest first)</h2>
+      <form method="post" action="{{ url_for('reload_log') }}">
+        <button type="submit">Reload log</button>
+      </form>
+      <textarea class="textarea-log" readonly>{{ log_preview }}</textarea>
+    </section>
+  </div>
 
   <section>
     <h2>Search Qdrant ({{ qdrant_collection }})</h2>
-    <form method="post" action="{{ url_for('search') }}">
-      <label>Document name contains:</label>
-      <input type="text" name="search_term" value="{{ search_term or '' }}" />
-      <button type="submit">Search</button>
-    </form>
-    {% if search_error %}
-      <div class="flash">{{ search_error }}</div>
-    {% endif %}
-    {% if search_results %}
-      <table>
-        <thead><tr><th>ID</th><th>Score</th><th>Payload</th></tr></thead>
-        <tbody>
-          {% for item in search_results %}
-            <tr>
-              <td>{{ item.id }}</td>
-              <td>{{ item.score }}</td>
-              <td><pre>{{ item.payload|format_payload }}</pre></td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    {% endif %}
+    <div class="search-layout">
+      <div class="search-box">
+        <form method="post" action="{{ url_for('search') }}">
+          <label>Document name contains:</label>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="text" name="search_term" value="{{ search_term or '' }}" style="flex:1" />
+            <button type="submit">Search</button>
+          </div>
+        </form>
+        {% if search_error %}
+          <div class="flash">{{ search_error }}</div>
+        {% endif %}
+        {% if search_results %}
+          <ul class="results-list">
+            {% for item in search_results %}
+              <li>
+                <button type="button" class="result-item" onclick="showResultDetails({{ loop.index0 }})">
+                  <div class="result-title">Point ID: {{ item.id }}</div>
+                  <div class="result-sub">File ID: {{ item.payload.file_id or item.payload.fileId or 'unknown' }}</div>
+                </button>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="flash">No results yet.</div>
+        {% endif %}
+      </div>
+
+      <div>
+        <div class="detail-panel" id="result-detail">
+          <div class="detail-header">Result details</div>
+          <div id="detail-content">Select a result to view its payload.</div>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section>
@@ -107,5 +133,33 @@
     </form>
     <p>Deletes all Qdrant entries, removes the local state database, clears images in Nextcloud ({{ qdrant_collection }} collection), and optionally restores default environment values.</p>
   </section>
+
+  <script>
+    const searchResults = {{ (search_results or []) | tojson | safe }};
+    function showResultDetails(index) {
+      const detail = document.getElementById('detail-content');
+      if (!searchResults || !searchResults.length) {
+        detail.textContent = 'No results available.';
+        return;
+      }
+      const item = searchResults[index];
+      if (!item) {
+        detail.textContent = 'Result not found.';
+        return;
+      }
+      const fileId = item.payload?.file_id || item.payload?.fileId || 'unknown';
+      const prettyPayload = JSON.stringify(item.payload || {}, null, 2);
+      detail.innerHTML = '';
+      const summary = document.createElement('div');
+      summary.innerHTML = `<strong>Point ID:</strong> ${item.id}<br/><strong>Score:</strong> ${item.score}<br/><strong>File ID:</strong> ${fileId}`;
+      const payloadBlock = document.createElement('pre');
+      payloadBlock.textContent = prettyPayload;
+      detail.appendChild(summary);
+      detail.appendChild(payloadBlock);
+    }
+    if (searchResults && searchResults.length) {
+      showResultDetails(0);
+    }
+  </script>
 </body>
 </html>
