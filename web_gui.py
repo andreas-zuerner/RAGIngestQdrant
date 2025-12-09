@@ -13,6 +13,7 @@ from flask import Flask, flash, redirect, render_template, request, url_for
 from helpers import init_conn
 from nextcloud_client import NextcloudError, env_client
 from scan_scheduler import mark_deleted
+import prompt_store
 
 def load_env_file():
     env_file = Path(__file__).parent / ".env.local"
@@ -34,6 +35,7 @@ LOG_PATH = Path(os.environ.get("SCHEDULER_LOG", PROJECT_ROOT / "log/scan_schedul
 DB_PATH = Path(os.environ.get("DB_PATH", PROJECT_ROOT / "DocumentDatabase/state.db"))
 ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
 EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.example"))
+PROMPTS_FILE = prompt_store.prompt_file_path()
 
 WEB_GUI_DEBUG = os.environ.get("WEB_GUI_DEBUG", "false").lower() in {"1", "true", "yes"}
 
@@ -78,6 +80,14 @@ def _run_command(args: List[str]) -> Tuple[int, str]:
         return 1, f"Command failed: {exc}"
 
 
+def append_log(message: str):
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with LOG_PATH.open("a", encoding="utf-8") as fh:
+        for line in message.splitlines() or [""]:
+            fh.write(f"[{ts}] {line}\n")
+
+
 def read_log() -> str:
     if not LOG_PATH.exists():
         return "No log file found yet."
@@ -87,6 +97,14 @@ def read_log() -> str:
         return "\n".join(recent_lines)
     except Exception as exc:  # pragma: no cover - defensive
         return f"Failed to read log: {exc}"
+
+
+def read_prompts() -> Dict[str, str]:
+    return prompt_store.load_prompts()
+
+
+def save_prompts(prompts: Dict[str, str]):
+    prompt_store.save_prompts(prompts)
 
 
 def load_env_file() -> Dict[str, str]:
@@ -227,24 +245,31 @@ def reset_qdrant() -> str:
     return "Qdrant collection purged via brain."
 
 
-@app.route("/")
-def home():
-    env = load_env_file()
-    return render_template(
-        "gui.html",
+def render_gui(**extra):
+    base = dict(
         log_preview=read_log(),
-        env_values=env,
+        env_values=load_env_file(),
         current_env=current_env(),
         qdrant_collection=BRAIN_COLLECTION,
+        prompts=read_prompts(),
     )
+    base.update(extra)
+    return render_template("gui.html", **base)
+
+
+@app.route("/")
+def home():
+    return render_gui()
 
 
 @app.post("/start")
 def start_scheduler():
     code, output = _run_command(["./brain_scan.sh", "start"])
     log_debug(f"[start_scheduler] exit_code={code}")
-    flash(output)
-    flash(f"Exit code: {code}")
+    append_log(output.strip() or "Started scheduler")
+    append_log(f"Exit code: {code}")
+    if code != 0:
+        flash("Failed to start scheduler (see log for details).")
     return redirect(url_for("home"))
 
 
@@ -252,8 +277,10 @@ def start_scheduler():
 def stop_scheduler():
     code, output = _run_command(["./brain_scan.sh", "stop"])
     log_debug(f"[stop_scheduler] exit_code={code}")
-    flash(output)
-    flash(f"Exit code: {code}")
+    append_log(output.strip() or "Stopped scheduler")
+    append_log(f"Exit code: {code}")
+    if code != 0:
+        flash("Failed to stop scheduler (see log for details).")
     return redirect(url_for("home"))
 
 
@@ -271,16 +298,7 @@ def search():
             log_debug(f"[search_error] term='{term}' err={exc}")
     else:
         log_debug("[search_skipped] empty term")
-    return render_template(
-        "gui.html",
-        log_preview=read_log(),
-        search_term=term,
-        search_results=found,
-        search_error=error,
-        env_values=load_env_file(),
-        current_env=current_env(),
-        qdrant_collection=BRAIN_COLLECTION,
-    )
+    return render_gui(search_term=term, search_results=found, search_error=error)
 
 
 @app.post("/delete")
@@ -348,6 +366,23 @@ def reset_all():
 @app.post("/reload-log")
 def reload_log():
     log_debug("[reload_log]")
+    return redirect(url_for("home"))
+
+
+@app.get("/log-data")
+def log_data():
+    return {"log": read_log()}
+
+
+@app.post("/prompts/update")
+def update_prompts():
+    prompts = {
+        "relevance": request.form.get("prompt_relevance", ""),
+        "chunking": request.form.get("prompt_chunking", ""),
+        "context": request.form.get("prompt_context", ""),
+    }
+    save_prompts(prompts)
+    flash("Prompts updated.")
     return redirect(url_for("home"))
 
 
