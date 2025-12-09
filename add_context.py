@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 CONTEXT_MIN_WORDS = 50
-CONTEXT_MAX_WORDS = 100
+CONTEXT_MAX_WORDS = 500
 
 SYSTEM_PROMPT = textwrap.dedent(
     f"""
