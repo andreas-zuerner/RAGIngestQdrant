@@ -24,22 +24,8 @@ EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.exam
 
 BRAIN_URL = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
 BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
-
-
-def _default_qdrant_url() -> str:
-    explicit = os.environ.get("QDRANT_URL")
-    if explicit:
-        return explicit.rstrip("/")
-
-    if BRAIN_URL:
-        return BRAIN_URL
-
-    return "http://localhost:8080"
-
-
-QDRANT_URL = _default_qdrant_url()
-QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", BRAIN_COLLECTION)
 BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY")
+QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", BRAIN_COLLECTION)
 
 NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
 
@@ -105,64 +91,21 @@ def _brain_post(path: str, payload: dict | None = None) -> requests.Response:
 
 
 def qdrant_scroll_by_name(substring: str, limit: int = 200) -> List[dict]:
-    results: List[dict] = []
-    page = None
-    substring_lower = substring.lower()
-    while True:
-        body = {
-            "limit": min(limit, 64),
-            "with_payload": True,
-            "offset": page,
-        }
-        r = requests.post(
-            f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/scroll",
-            json=body,
-            timeout=30,
-        )
-        if r.status_code != 200:
-            raise RuntimeError(f"Qdrant scroll failed: {r.status_code} {r.text}")
-        data = r.json().get("result", {})
-        points = data.get("points", [])
-        for p in points:
-            payload = p.get("payload") or {}
-            file_name = str(payload.get("file_name") or payload.get("path") or payload.get("meta", {}).get("path") or "")
-            if substring_lower in file_name.lower():
-                results.append(p)
-                if len(results) >= limit:
-                    return results
-        page = data.get("next_page_offset")
-        if not page:
-            break
-    return results
+    payload = {"substring": substring, "limit": limit, "collection": QDRANT_COLLECTION}
+    r = _brain_post("/admin/scroll-by-name", payload)
+    if r.status_code != 200:
+        raise RuntimeError(f"Brain scroll failed: {r.status_code} {r.text}")
+    data = r.json()
+    return data.get("results", [])
 
 
 def qdrant_ids_for_file(file_id: str, limit: int = 500) -> List[str | int]:
-    ids: List[str | int] = []
-    page = None
-    payload_filter = {"must": [{"key": "meta.file_id", "match": {"value": file_id}}]}
-    while True:
-        body = {
-            "limit": min(limit, 64),
-            "with_payload": False,
-            "offset": page,
-            "filter": payload_filter,
-        }
-        r = requests.post(
-            f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/scroll",
-            json=body,
-            timeout=30,
-        )
-        if r.status_code != 200:
-            raise RuntimeError(f"Qdrant scroll failed: {r.status_code} {r.text}")
-        data = r.json().get("result", {})
-        points = data.get("points", [])
-        ids.extend([p.get("id") for p in points if p.get("id") is not None])
-        if len(ids) >= limit:
-            return ids[:limit]
-        page = data.get("next_page_offset")
-        if not page:
-            break
-    return ids
+    payload = {"file_id": file_id, "limit": limit, "collection": QDRANT_COLLECTION}
+    r = _brain_post("/admin/ids-for-file", payload)
+    if r.status_code != 200:
+        raise RuntimeError(f"Brain lookup failed: {r.status_code} {r.text}")
+    data = r.json()
+    return data.get("ids", [])
 
 
 def delete_qdrant_entries(file_id: str) -> str:

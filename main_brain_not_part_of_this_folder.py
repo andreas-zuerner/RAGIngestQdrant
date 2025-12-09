@@ -371,6 +371,25 @@ async def memorize_chunks(chunks: list[tuple[str, dict]], *, collection: str | N
 class DeleteIn(BaseModel):
     ids: list[str | int]
 
+
+class ScrollByNameIn(BaseModel):
+    substring: str
+    limit: int = 200
+    collection: str | None = None
+
+    @field_validator("substring")
+    @classmethod
+    def ensure_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("substring must not be empty")
+        return v
+
+
+class FileIdsIn(BaseModel):
+    file_id: str
+    limit: int = 500
+    collection: str | None = None
+
 @app.post("/admin/delete")
 async def admin_delete(inp: DeleteIn, _: bool = Depends(check_api_key)):
     r = await client.post(
@@ -390,3 +409,71 @@ async def admin_purge(_: bool = Depends(check_api_key)):
     if r.status_code not in (200, 202):
         raise HTTPException(502, f"Qdrant purge failed: {r.text}")
     return {"status":"ok","purged":True}
+
+
+@app.post("/admin/scroll-by-name")
+async def admin_scroll_by_name(inp: ScrollByNameIn, _: bool = Depends(check_api_key)):
+    collection_name = resolve_collection(inp.collection)
+    await ensure_collection(collection_name)
+
+    results: list[dict] = []
+    offset = None
+    substring_lower = inp.substring.lower()
+    while True:
+        body = {"limit": min(inp.limit, 64), "with_payload": True, "offset": offset}
+        r = await client.post(
+            f"{settings.QDRANT_URL}/collections/{collection_name}/points/scroll",
+            json=body,
+        )
+        if r.status_code != 200:
+            raise HTTPException(502, f"Qdrant scroll failed: {r.text}")
+        data = r.json().get("result") or {}
+        points = data.get("points") or []
+        for p in points:
+            payload = p.get("payload") or {}
+            file_name = str(
+                payload.get("file_name")
+                or payload.get("path")
+                or (payload.get("meta") or {}).get("path")
+                or ""
+            )
+            if substring_lower in file_name.lower():
+                results.append(p)
+                if len(results) >= inp.limit:
+                    return {"results": results, "count": len(results)}
+        offset = data.get("next_page_offset")
+        if not offset:
+            break
+    return {"results": results, "count": len(results)}
+
+
+@app.post("/admin/ids-for-file")
+async def admin_ids_for_file(inp: FileIdsIn, _: bool = Depends(check_api_key)):
+    collection_name = resolve_collection(inp.collection)
+    await ensure_collection(collection_name)
+
+    ids: list[str | int] = []
+    offset = None
+    payload_filter = {"must": [{"key": "meta.file_id", "match": {"value": inp.file_id}}]}
+    while True:
+        body = {
+            "limit": min(inp.limit, 64),
+            "with_payload": False,
+            "offset": offset,
+            "filter": payload_filter,
+        }
+        r = await client.post(
+            f"{settings.QDRANT_URL}/collections/{collection_name}/points/scroll",
+            json=body,
+        )
+        if r.status_code != 200:
+            raise HTTPException(502, f"Qdrant scroll failed: {r.text}")
+        data = r.json().get("result") or {}
+        points = data.get("points") or []
+        ids.extend([p.get("id") for p in points if p.get("id") is not None])
+        if len(ids) >= inp.limit:
+            return {"ids": ids[: inp.limit], "count": len(ids)}
+        offset = data.get("next_page_offset")
+        if not offset:
+            break
+    return {"ids": ids, "count": len(ids)}
