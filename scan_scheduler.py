@@ -14,18 +14,6 @@ from nextcloud_client import env_client, NextcloudError
 
 from helpers import init_conn, compute_file_id, is_due
 
-def load_env_file():
-    env_file = Path(__file__).parent / ".env.local"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            os.environ[key.strip()] = value.strip()
-
-load_env_file()
-
 DB_PATH = os.environ.get("DB_PATH", "DocumentDatabase/state.db")
 NEXTCLOUD_DOC_DIR = os.environ.get("NEXTCLOUD_DOC_DIR", "/RAGdocuments")
 NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
