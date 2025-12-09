@@ -4,22 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-SYSTEM_PROMPT = """
-You are a strict text-segmentation agent.
-Your ONLY task is to divide the provided text into coherent, semantically intact chunks.
-Use natural boundaries (paragraphs, headings, section breaks) whenever possible.
-
-MANDATORY RULES (no exceptions):
-1. Do NOT summarize any content.
-2. Do NOT rephrase any part of the text.
-3. Do NOT translate the text.
-4. Do NOT split inside a sentence.
-5. Do NOT add, remove, or alter any words, unless explicitly instructed.
-6. Produce the output as a verbatim excerpt of the original text, only cut at valid boundaries.
-
-Output requirement:
-Return only the first chunk.
-""".strip()
+from prompt_store import get_prompt
 
 PROMPT_TEMPLATE = """{system}\n\n---\n\nTEXT SEGMENT:\n{segment}"""
 
@@ -75,7 +60,7 @@ def _clean_text_for_match(text: str) -> str:
 
 
 def _build_prompt(segment: str) -> str:
-    return PROMPT_TEMPLATE.format(system=SYSTEM_PROMPT, segment=segment)
+    return PROMPT_TEMPLATE.format(system=get_prompt("chunking"), segment=segment)
 
 
 def _call_llm(window_text: str, *, ollama_host: str, model: str, timeout: float) -> str:

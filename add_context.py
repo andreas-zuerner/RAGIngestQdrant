@@ -1,29 +1,13 @@
 import re
-import textwrap
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import requests
 
+from prompt_store import get_prompt
+
 CONTEXT_MIN_WORDS = 50
 CONTEXT_MAX_WORDS = 500
-
-SYSTEM_PROMPT = textwrap.dedent(
-    f"""
-You help improve retrieval for text chunks in a vector database.
-
-Given:
-- The full source document.
-- One specific chunk taken from that document.
-
-Task:
-- Write a short context paragraph of about {CONTEXT_MIN_WORDS}–{CONTEXT_MAX_WORDS} words.
-- The context should describe where this chunk belongs in the overall document (topic, section, purpose, important entities, abbreviations, etc.).
-- Do NOT rewrite or quote the chunk itself.
-- Do NOT mention "chunk" or "document" explicitly.
-- Just output the context paragraph, nothing else.
-"""
-).strip()
 
 PROMPT_TEMPLATE = """{system}\n\n---\n\nFULL DOCUMENT:\n{document}\n\n---\n\nFOCUS CHUNK:\n{chunk}\n\n---\n\nCONTEXT ({min_words}-{max_words} words):"""
 
@@ -70,7 +54,7 @@ def _reconstruct_full_text(chunks: List[ChunkItem]) -> str:
 def _call_llm(full_doc: str, chunk_text: str, *, ollama_host: str, model: str, timeout: float) -> str:
     """Send the document + chunk to the LLM and return the generated context."""
     prompt = PROMPT_TEMPLATE.format(
-        system=SYSTEM_PROMPT,
+        system=get_prompt("context"),
         document=full_doc,
         chunk=chunk_text,
         min_words=CONTEXT_MIN_WORDS,

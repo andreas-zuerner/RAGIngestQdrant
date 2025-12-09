@@ -22,9 +22,10 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from nextcloud_client import env_client, NextcloudClient, NextcloudError
 
-from helpers import compute_next_review_at, utcnow_iso
-from chunking import chunk_document_with_llm_fallback
 from add_context import enrich_chunks_with_context
+from chunking import chunk_document_with_llm_fallback
+from helpers import compute_next_review_at, utcnow_iso
+from prompt_store import get_prompt
 
 
 class DoclingUnavailableError(RuntimeError):
@@ -675,17 +676,7 @@ def ai_score_text(ollama_host, model, text, timeout=600, debug=False, dbg_root: 
     from datetime import datetime
 
     # --- Systemprompt & Nutzlast bauen ---
-    sys_prompt = (
-        "You are a strict, privacy-aware classifier for a personal knowledge base. "
-        "Return ONLY compact JSON with keys exactly: "
-        '{"is_relevant": true|false, "confidence": number, "topics": [string], '
-        '"visibility": "public|private|confidential", "summary": "max 60 words"}.\n'
-        "Relevant = helpful for future Q&A of THIS user (operations/ERP/home-lab/finance), "
-        "technical how-to, personal notes, key decisions, configs, logs WITH context.\n"
-        "Irrelevant = binaries, trivial short logs, duplicates, cache noise, images without text.\n"
-        "If content exposes secrets or identifiers -> visibility='confidential'.\n"
-        "Output JSON ONLY. No prose."
-    )
+    sys_prompt = get_prompt("relevance")
 
     max_sample = int(os.environ.get("SCORER_SAMPLE_CHARS", "12000"))
     content_sample = (text or "")[:max_sample]
