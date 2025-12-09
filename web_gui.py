@@ -14,6 +14,18 @@ from helpers import init_conn
 from nextcloud_client import NextcloudError, env_client
 from scan_scheduler import mark_deleted
 
+def load_env_file():
+    env_file = Path(__file__).parent / ".env.local"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ[key.strip()] = value.strip()
+
+load_env_file()
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("WEB_GUI_SECRET", "dev-secret")
 
