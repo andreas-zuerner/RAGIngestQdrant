@@ -30,7 +30,7 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
    * `BRAIN_OVERLAP_TOKENS` – Überlappung zwischen zwei Chunks.
    * `BRAIN_REQUEST_TIMEOUT` – Timeout in Sekunden für `POST /ingest/text`.
 
-3. Scanner + Worker mit dem neuen Steuerskript starten:
+3. Scanner + Worker mit dem Steuerskript starten:
 
    ```bash
    ./brain_scan.sh start
@@ -43,7 +43,7 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
    in der Zukunft liegt. Erkennt der Scheduler, dass eine Datei wirklich
    verschwunden ist, markiert er sie als gelöscht; reine Verschiebungen werden
    über Datei-Metadaten erkannt und behalten ihren bisherigen Status. Der Worker
-   verarbeitet sämtliche Dokumente inzwischen über `docling` (siehe
+   verarbeitet sämtliche Dokumente über `docling` (siehe
    https://docling-project.github.io/docling/) und profitiert dadurch von den
    eingebauten Extraktions-Pipelines inklusive Hybrid-Chunking sowie optionaler
    OCR-Unterstützung.
@@ -98,20 +98,18 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
   erkannte Bilder; letztere werden im Bilder-Ordner abgelegt und im Text mit
   eindeutigen Referenzen (`![…](<pfad>)`) vermerkt.
 
-## Git-Befehle ausführen
+## SQLite-Web: Datenbank prüfen
 
-* Alle Git-Kommandos (z. B. `git checkout -b <zweig>`, `git switch main`,
-  `git pull`) führst du im Projektstamm aus: `/workspace/BrainScanDocs`.
-* Von dort aus kannst du auch alternative Stände nutzen, ohne `main` zu ändern,
-  z. B.:
+Um den aktuellen Zustand der SQLite-Datenbank (`DocumentDatabase/state.db`) zu
+prüfen, kann `sqlite-web` eingesetzt werden. Installation und Start auf einer
+Debian/Ubuntu-Maschine:
 
-  ```bash
-  git checkout <commit-oder-branch>
-  pip install .
-  ```
+```bash
+apt update
+apt install -y python3-pip python3-venv
+sqlite_web /srv/rag/RAGIngestQdrant/DocumentDatabase/state.db \
+  -H 0.0.0.0 -p 8081
+```
 
-  oder direkt aus einem Branch installieren:
-
-  ```bash
-  pip install "git+https://<repo-url>.git@<branch>"
-  ```
+Der Dienst ist anschließend unter `http://<host>:8081` erreichbar und zeigt die
+Tabellen, Einträge und Index-Informationen der Datenbank an.

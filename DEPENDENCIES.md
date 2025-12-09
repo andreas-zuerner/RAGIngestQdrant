@@ -1,8 +1,7 @@
 # Dependencies & Usage Guide
 
-This document summarizes the runtime dependencies of the BrainScanDocs project
-and demonstrates how to prepare a local environment for running the scanner and
-worker components.
+This document summarizes the runtime dependencies of the project and shows how
+to prepare a local environment for running the scanner and worker components.
 
 ## Python dependencies
 
@@ -76,23 +75,16 @@ previously bundled with this repository.
 
 ## Project layout & test data
 
-Test fixtures live in `ct109-data/`, while the SQLite database is stored in a
-separate, relative directory:
-
-- `DocumentDatabase/` &rarr; location where the SQLite database (`state.db`)
-  will be created at runtime.
-Test fixtures live in `ct109-data/`:
-
-- `ct109-data/scan_root/` &rarr; contains sample `.txt` files that help verify
-  the scanner/worker integration during development.
+- `DocumentDatabase/` → location where the SQLite database (`state.db`)
+  is created at runtime.
+- `ct109-data/scan_root/` → sample `.txt` files for local testing of the
+  scanner/worker integration.
 
 ## Configuration
 
-Environment variables werden in `.env.local` abgelegt. Eine vollständige
-Beispieldatei liegt unter `.env.local.example` bei und enthält sämtliche
-Konfigurationsschlüssel (u. a. Datenbankpfad, Scan-Wurzelverzeichnisse, Brain- und
-Ollama-Endpunkte). Kopieren Sie die Datei und passen Sie die Werte an Ihre
-Umgebung an:
+Environment variables reside in `.env.local`. A full example (`.env.local.example`)
+contains all keys (database path, scan roots, Brain/Ollama endpoints). Copy and
+adjust it for your environment:
 
 ```bash
 cp .env.local.example .env.local
@@ -102,8 +94,8 @@ cp .env.local.example .env.local
 ## Running the services
 
 1. Activate the virtual environment and ensure dependencies are installed.
-2. Kopieren und bearbeiten Sie `.env.local` wie oben beschrieben.
-3. Starten Sie Scanner und Worker gemeinsam über das Steuerskript:
+2. Copy and edit `.env.local` as described above.
+3. Start scanner and worker together via the control script:
 
    ```bash
    ./brain_scan.sh start
@@ -118,9 +110,22 @@ cp .env.local.example .env.local
    ./brain_scan.sh stop
    ```
 
-Der Scanner sorgt dafür, dass der Worker automatisch gestartet wird, sobald
-Jobs in der Datenbank-Queue liegen. Der Worker beendet sich selbst, wenn keine
-Dokumente mehr anstehen.
+The scanner starts the worker automatically as soon as jobs appear in the queue.
+The worker terminates itself when no documents remain.
+
+## Inspecting the database with sqlite-web
+
+To inspect `DocumentDatabase/state.db` via a browser, install `sqlite-web` on a
+Debian/Ubuntu host and expose it on port 8081:
+
+```bash
+apt update
+apt install -y python3-pip python3-venv
+sqlite_web /srv/rag/RAGIngestQdrant/DocumentDatabase/state.db \
+  -H 0.0.0.0 -p 8081
+```
+
+Afterwards the UI is available at `http://<host>:8081`.
 
 ## Working with OpenDocument files
 
