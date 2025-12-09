@@ -29,11 +29,14 @@ class NextcloudClient:
         self._dav_base = f"{self.base_url}/remote.php/dav/files/{self.user}"
         self.debug = os.environ.get("NEXTCLOUD_DEBUG", "0") == "1"
 
+    def _timestamp(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     def _log(self, msg: str):
         if not self.debug:
             return
-        ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-        print(f"[nextcloud] {ts} {msg}", flush=True)
+        ts = self._timestamp()
+        print(f"[{ts}] [nextcloud] {msg}", flush=True)
 
     # ---------- Helpers ----------
     def _url(self, remote_path: str) -> str:
@@ -227,8 +230,9 @@ def env_client() -> NextcloudClient:
     user = os.environ.get("NEXTCLOUD_USER", "andreas")
     token = os.environ.get("TOKEN") or os.environ.get("NEXTCLOUD_TOKEN", "")
     client = NextcloudClient(base_url, user, token)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(
-        f"[nextcloud] init base_url={base_url} user={user} token={'set' if bool(token) else 'missing'}",
+        f"[{ts}] [nextcloud] init base_url={base_url} user={user} token={'set' if bool(token) else 'missing'}",
         flush=True,
     )
     client.login()

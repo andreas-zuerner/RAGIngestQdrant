@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Set
 
@@ -35,6 +36,15 @@ RETRY_PRIORITY_DEFAULT = 30
 PROJECT_ROOT = Path(__file__).resolve().parent
 WORKER_SCRIPT = PROJECT_ROOT / "ingest_worker.py"
 PID_FILE = os.environ.get("SCAN_SCHEDULER_PID_FILE")
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def log_scan(message: str):
+    ts = _timestamp()
+    print(f"[{ts}] [scan] {message}", flush=True)
 
 
 def row_get(row, key, default=None):
@@ -140,7 +150,7 @@ def write_pid_file():
         pid_path.parent.mkdir(parents=True, exist_ok=True)
         pid_path.write_text(str(os.getpid()), encoding="utf-8")
     except Exception as exc:
-        print(f"[scan] failed to write pid file: {exc}", flush=True)
+        log_scan(f"failed to write pid file: {exc}")
 
 def excluded(path: Path) -> bool:
     s = str(path)
@@ -259,13 +269,12 @@ def sync_and_enqueue(conn):
     try:
         client = env_client()
     except Exception as exc:
-        print(f"[scan] failed to init Nextcloud client: {exc}", flush=True)
+        log_scan(f"failed to init Nextcloud client: {exc}")
         return added, enq, 0
 
     for root in ROOT_DIRS:
-        print(
-            f"[scan] walking Nextcloud root={root} base_url={NEXTCLOUD_BASE_URL} user={NEXTCLOUD_USER}",
-            flush=True,
+        log_scan(
+            f"walking Nextcloud root={root} base_url={NEXTCLOUD_BASE_URL} user={NEXTCLOUD_USER}"
         )
         try:
             for entry in client.walk(root):
@@ -311,9 +320,9 @@ def sync_and_enqueue(conn):
                 if enqueue_job(conn, fid, reason):
                     enq += 1
         except NextcloudError as exc:
-            print(f"[scan] Nextcloud error for root {root}: {exc}", flush=True)
+            log_scan(f"Nextcloud error for root {root}: {exc}")
             continue
-        print(f"[scan] finished root={root} added={added} enqueued={enq}", flush=True)
+        log_scan(f"finished root={root} added={added} enqueued={enq}")
 
     removed = purge_missing(conn, seen)
     conn.commit()
@@ -351,11 +360,11 @@ def main():
         if worker_running():
             return
         cmd = [sys.executable, str(WORKER_SCRIPT)]
-        print(f"[scan] starting worker: {' '.join(cmd)}", flush=True)
+        log_scan(f"starting worker: {' '.join(cmd)}")
         try:
             worker_proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT))
         except Exception as exc:
-            print(f"[scan] failed to start worker: {exc}", flush=True)
+            log_scan(f"failed to start worker: {exc}")
             worker_proc = None
 
     def stop_worker():
@@ -365,29 +374,31 @@ def main():
         if worker_proc.poll() is not None:
             worker_proc = None
             return
-        print("[scan] stopping worker...", flush=True)
+        log_scan("stopping worker...")
         worker_proc.terminate()
         try:
             worker_proc.wait(timeout=WORKER_STOP_TIMEOUT)
         except subprocess.TimeoutExpired:
-            print("[scan] worker did not exit in time - killing", flush=True)
+            log_scan("worker did not exit in time - killing")
             worker_proc.kill()
             worker_proc.wait()
         finally:
             worker_proc = None
 
-    print(f"[scan] DB={DB_PATH} roots={ROOT_DIRS} sleep={SLEEP_SECS}s max_jobs={MAX_JOBS_PER_PASS}")
+    log_scan(
+        f"DB={DB_PATH} roots={ROOT_DIRS} sleep={SLEEP_SECS}s max_jobs={MAX_JOBS_PER_PASS}"
+    )
     write_pid_file()
     try:
         while not stop_requested:
             if worker_proc and worker_proc.poll() is not None:
                 rc = worker_proc.returncode
-                print(f"[scan] worker exited with code {rc}", flush=True)
+                log_scan(f"worker exited with code {rc}")
                 worker_proc = None
 
             n, e, d = sync_and_enqueue(conn)
             queued = count_queued_jobs(conn)
-            print(f"[scan] synced={n} enqueued={e} pruned={d} queued={queued}", flush=True)
+            log_scan(f"synced={n} enqueued={e} pruned={d} queued={queued}")
 
             if queued and not worker_running():
                 start_worker()
@@ -397,19 +408,19 @@ def main():
 
             sleep_remaining = 300 if queued == 0 else SLEEP_SECS
             if queued == 0 and sleep_remaining != SLEEP_SECS:
-                print(f"[scan] idle queue detected, sleeping {sleep_remaining}s", flush=True)
+                log_scan(f"idle queue detected, sleeping {sleep_remaining}s")
             while sleep_remaining > 0 and not stop_requested:
                 time.sleep(min(1, sleep_remaining))
                 sleep_remaining -= 1
     except KeyboardInterrupt:
-        print("[scan] interrupted, stopping...", flush=True)
+        log_scan("interrupted, stopping...")
     finally:
         stop_worker()
         try:
             conn.close()
         except Exception:
             pass
-        print("[scan] scheduler stopped", flush=True)
+        log_scan("scheduler stopped")
 
 if __name__ == "__main__":
     main()

@@ -183,8 +183,8 @@ WORKER_ID          = f"{os.uname().nodename}-pid{os.getpid()}"
 _NEXTCLOUD_CLIENT: NextcloudClient | None = None
 
 def log(msg):
-    ts = datetime.utcnow().isoformat(timespec='seconds') + "Z"
-    print(f"[worker_id] {ts} {msg}", flush=True)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] [worker] [{WORKER_ID}] {msg}", flush=True)
 
 
 def log_debug(msg):
