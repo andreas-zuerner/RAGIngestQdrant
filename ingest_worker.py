@@ -388,6 +388,7 @@ def update_file_result(conn, file_id, result_obj):
 def replace_file_images(conn, file_id: str, images: List[Dict[str, object]] | None):
     """Persist the latest image references for a file (idempotent)."""
     try:
+        ensure_db(conn)
         conn.execute("DELETE FROM images WHERE file_id=?", (file_id,))
         for img in images or []:
             reference = img.get("reference") or img.get("path") or ""
