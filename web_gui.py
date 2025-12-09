@@ -234,6 +234,25 @@ def delete_nextcloud_images(file_id: str, references: Optional[List[str]] = None
             continue
     return f"Removed {removed} image(s) from Nextcloud ({len(targets)} recorded)."
 
+def delete_images_for_file(file_id: str) -> Tuple[str, str]:
+    """Remove a file's images from Nextcloud and the state database."""
+
+    if not DB_PATH.exists():
+        return "No recorded images for file.", "No database found for image records."
+
+    conn = init_conn(DB_PATH)
+    try:
+        rows = conn.execute("SELECT reference FROM images WHERE file_id=?", (file_id,)).fetchall()
+        references = [row["reference"] for row in rows if row and row["reference"]]
+        nc_msg = delete_nextcloud_images(file_id, references)
+
+        cur = conn.execute("DELETE FROM images WHERE file_id=?", (file_id,))
+        conn.commit()
+        db_removed = cur.rowcount or 0
+        db_msg = f"Removed {db_removed} image record(s) for {file_id}."
+        return nc_msg, db_msg
+    finally:
+        conn.close()
 
 def reset_nextcloud_images() -> str:
     try:
