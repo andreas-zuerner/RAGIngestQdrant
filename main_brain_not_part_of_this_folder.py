@@ -370,7 +370,10 @@ async def memorize_chunks(chunks: list[tuple[str, dict]], *, collection: str | N
 
 class DeleteIn(BaseModel):
     ids: list[str | int]
+    collection: str | None = None
 
+class PurgeIn(BaseModel):
+    collection: str | None = None
 
 class ScrollByNameIn(BaseModel):
     substring: str
@@ -384,7 +387,6 @@ class ScrollByNameIn(BaseModel):
             raise ValueError("substring must not be empty")
         return v
 
-
 class FileIdsIn(BaseModel):
     file_id: str
     limit: int = 500
@@ -392,24 +394,31 @@ class FileIdsIn(BaseModel):
 
 @app.post("/admin/delete")
 async def admin_delete(inp: DeleteIn, _: bool = Depends(check_api_key)):
+    # collection aus Payload auswerten, sonst Fallback auf Default
+    collection_name = resolve_collection(inp.collection)
+    await ensure_collection(collection_name)
+
     r = await client.post(
-      f"{settings.QDRANT_URL}/collections/{settings.QDRANT_COLLECTION}/points/delete?wait=true",
-      json={"points": inp.ids}
+        f"{settings.QDRANT_URL}/collections/{collection_name}/points/delete?wait=true",
+        json={"points": inp.ids},
     )
     if r.status_code not in (200, 202):
         raise HTTPException(502, f"Qdrant delete failed: {r.text}")
-    return {"status":"ok","deleted":inp.ids}
+    return {"status": "ok", "deleted": inp.ids, "collection": collection_name}
 
 @app.post("/admin/purge")
-async def admin_purge(_: bool = Depends(check_api_key)):
+async def admin_purge(inp: PurgeIn, _: bool = Depends(check_api_key)):
+    # collection aus Payload oder Default
+    collection_name = resolve_collection(inp.collection)
+    await ensure_collection(collection_name)
+
     r = await client.post(
-      f"{settings.QDRANT_URL}/collections/{settings.QDRANT_COLLECTION}/points/delete?wait=true",
-      json={"filter": {"must": []}}  # alles
+        f"{settings.QDRANT_URL}/collections/{collection_name}/points/delete?wait=true",
+        json={"filter": {"must": []}},
     )
     if r.status_code not in (200, 202):
         raise HTTPException(502, f"Qdrant purge failed: {r.text}")
-    return {"status":"ok","purged":True}
-
+    return {"status": "ok", "purged": True, "collection": collection_name}
 
 @app.post("/admin/scroll-by-name")
 async def admin_scroll_by_name(inp: ScrollByNameIn, _: bool = Depends(check_api_key)):
