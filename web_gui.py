@@ -4,7 +4,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urljoin
 
 import requests
 from flask import Flask, flash, redirect, render_template, request, url_for
@@ -29,14 +29,12 @@ BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
 def _default_qdrant_url() -> str:
     explicit = os.environ.get("QDRANT_URL")
     if explicit:
-        return explicit
+        return explicit.rstrip("/")
 
-    parsed = urlparse(BRAIN_URL)
-    if parsed.scheme and parsed.hostname:
-        netloc = f"{parsed.hostname}:6333"
-        return urlunparse((parsed.scheme, netloc, "", "", "", ""))
+    if BRAIN_URL:
+        return BRAIN_URL
 
-    return "http://localhost:6333"
+    return "http://localhost:8080"
 
 
 QDRANT_URL = _default_qdrant_url()
