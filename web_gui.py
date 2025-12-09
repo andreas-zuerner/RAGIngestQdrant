@@ -4,7 +4,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 from flask import Flask, flash, redirect, render_template, request, url_for
@@ -22,9 +22,25 @@ DB_PATH = Path(os.environ.get("DB_PATH", PROJECT_ROOT / "DocumentDatabase/state.
 ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
 EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.example"))
 
-QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
-QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "personal_memory")
 BRAIN_URL = os.environ.get("BRAIN_URL", "http://localhost:8000")
+BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
+
+
+def _default_qdrant_url() -> str:
+    explicit = os.environ.get("QDRANT_URL")
+    if explicit:
+        return explicit
+
+    parsed = urlparse(BRAIN_URL)
+    if parsed.scheme and parsed.hostname:
+        netloc = f"{parsed.hostname}:6333"
+        return urlunparse((parsed.scheme, netloc, "", "", "", ""))
+
+    return "http://localhost:6333"
+
+
+QDRANT_URL = _default_qdrant_url()
+QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", BRAIN_COLLECTION)
 BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY")
 
 NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
