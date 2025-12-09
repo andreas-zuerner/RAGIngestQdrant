@@ -24,7 +24,7 @@ from nextcloud_client import env_client, NextcloudClient, NextcloudError
 
 from add_context import enrich_chunks_with_context
 from chunking import chunk_document_with_llm_fallback
-from helpers import compute_next_review_at, utcnow_iso
+from helpers import compute_next_review_at, ensure_db, utcnow_iso
 from prompt_store import get_prompt
 
 
@@ -383,6 +383,28 @@ def update_file_result(conn, file_id, result_obj):
         (json.dumps(result_obj, ensure_ascii=False), file_id)
     )
     conn.commit()
+
+
+def replace_file_images(conn, file_id: str, images: List[Dict[str, object]] | None):
+    """Persist the latest image references for a file (idempotent)."""
+    try:
+        conn.execute("DELETE FROM images WHERE file_id=?", (file_id,))
+        for img in images or []:
+            reference = img.get("reference") or img.get("path") or ""
+            if not reference:
+                continue
+            conn.execute(
+                "INSERT INTO images (file_id, label, reference, mime) VALUES (?,?,?,?)",
+                (
+                    file_id,
+                    img.get("label"),
+                    reference,
+                    img.get("mime"),
+                ),
+            )
+        conn.commit()
+    except Exception as exc:
+        log(f"[image_record_failed] file_id={file_id} err={exc}")
 
 
 
@@ -1016,6 +1038,8 @@ def process_one(conn, job_id, file_id):
             f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}",
         )
 
+        replace_file_images(conn, file_id, extraction.images)
+
         if not clean or len(clean) < MIN_CHARS:
             update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
             log_decision(conn, job_id, file_id, "threshold", f"skip: too_short chars={len(clean)} < MIN_CHARS={MIN_CHARS}")
@@ -1256,6 +1280,7 @@ def main():
     except Exception:
         pass
     conn = sqlite3.connect(str(db_path), timeout=30, isolation_level=None)
+    ensure_db(conn)
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")

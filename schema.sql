@@ -53,3 +53,14 @@ CREATE TABLE IF NOT EXISTS decision_log (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_decision_log_step ON decision_log(step, ts);
+
+CREATE TABLE IF NOT EXISTS images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id TEXT NOT NULL,
+    label TEXT,
+    reference TEXT NOT NULL,
+    mime TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_images_file_id ON images(file_id);

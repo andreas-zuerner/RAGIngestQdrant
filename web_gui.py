@@ -1,5 +1,6 @@
 import json
 import os
+import posixpath
 import sqlite3
 import subprocess
 from datetime import datetime
@@ -183,21 +184,55 @@ def delete_qdrant_entries(file_id: str) -> str:
     return f"Deleted {len(ids)} Qdrant point(s): {', '.join(str(i) for i in ids)}"
 
 
-def delete_nextcloud_images(file_id: str) -> str:
+def image_references_for_file(file_id: str) -> List[str]:
+    if not DB_PATH.exists():
+        return []
+    conn = init_conn(DB_PATH)
+    try:
+        rows = conn.execute("SELECT reference FROM images WHERE file_id=?", (file_id,)).fetchall()
+        return [row["reference"] for row in rows if row and row["reference"]]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def clear_image_records(file_id: str | None = None) -> str:
+    if not DB_PATH.exists():
+        return "No database found for image records."
+    conn = init_conn(DB_PATH)
+    try:
+        if file_id:
+            cur = conn.execute("DELETE FROM images WHERE file_id=?", (file_id,))
+        else:
+            cur = conn.execute("DELETE FROM images")
+        conn.commit()
+        removed = cur.rowcount or 0
+        scope = f" for {file_id}" if file_id else " from state.db"
+        return f"Removed {removed} image record(s){scope}."
+    finally:
+        conn.close()
+
+
+def delete_nextcloud_images(file_id: str, references: Optional[List[str]] = None) -> str:
     try:
         client = env_client()
     except Exception as exc:
         return f"Nextcloud connection failed: {exc}"
+    targets = references if references is not None else image_references_for_file(file_id)
+    if not targets:
+        return "No recorded images for file."
     removed = 0
-    for entry in client.walk(NEXTCLOUD_IMAGE_DIR):
-        name = entry.get("path") or ""
-        if file_id in name:
-            try:
-                client.delete(name)
-                removed += 1
-            except Exception:
-                continue
-    return f"Removed {removed} image(s) from Nextcloud."
+    for reference in targets:
+        remote_path = reference
+        if not remote_path.startswith("/"):
+            remote_path = posixpath.normpath(f"/{NEXTCLOUD_IMAGE_DIR}/{remote_path}")
+        try:
+            client.delete(remote_path)
+            removed += 1
+        except Exception:
+            continue
+    return f"Removed {removed} image(s) from Nextcloud ({len(targets)} recorded)."
 
 
 def reset_nextcloud_images() -> str:
@@ -215,7 +250,8 @@ def reset_nextcloud_images() -> str:
             removed += 1
         except Exception:
             continue
-    return f"Deleted {removed} items from {NEXTCLOUD_IMAGE_DIR}."
+    db_msg = clear_image_records()
+    return f"Deleted {removed} items from {NEXTCLOUD_IMAGE_DIR}. {db_msg}"
 
 
 def delete_state_entry(file_id: str) -> str:
@@ -309,13 +345,14 @@ def delete_file():
         log_debug("[delete_file_skipped] missing file_id")
         flash("Missing file_id")
         return redirect(url_for("home"))
+    image_refs = image_references_for_file(file_id)
     messages.append(delete_qdrant_entries(file_id))
     messages.append(delete_state_entry(file_id))
-    messages.append(delete_nextcloud_images(file_id))
+    messages.append(delete_nextcloud_images(file_id, image_refs))
+    messages.append(clear_image_records(file_id))
     for msg in messages:
         log_debug(f"[delete_file] file_id={file_id} msg={msg}")
-    for msg in messages:
-        flash(msg)
+        append_log(f"[delete_file] {file_id}: {msg}")
     return redirect(url_for("home"))
 
 
@@ -358,8 +395,7 @@ def reset_all():
         messages.append("Restored .env.local from example file.")
     for msg in messages:
         log_debug(f"[reset_all] {msg}")
-    for msg in messages:
-        flash(msg)
+        append_log(f"[reset_all] {msg}")
     return redirect(url_for("home"))
 
 
