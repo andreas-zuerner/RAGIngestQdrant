@@ -79,7 +79,7 @@
 
   <section>
     <h2>Environment variables & prompts</h2>
-    <form method="post" action="{{ url_for('env_update') }}">
+    <form method="post" action="{{ url_for('update_env') }}">
       {% for key, value in env_values.items() %}
       <div class="env-pair">
         <input type="text" readonly value="{{ key }}" />
