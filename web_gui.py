@@ -25,7 +25,6 @@ EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.exam
 BRAIN_URL = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
 BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
 BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY", "change-me")
-QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", BRAIN_COLLECTION)
 
 NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
 
@@ -87,11 +86,15 @@ def _brain_headers() -> Dict[str, str]:
 
 def _brain_post(path: str, payload: dict | None = None) -> requests.Response:
     url = urljoin(BRAIN_URL.rstrip("/") + "/", path.lstrip("/"))
-    return requests.post(url, json=payload or {}, headers=_brain_headers(), timeout=30)
+    payload_with_collection = dict(payload or {})
+    payload_with_collection["collection"] = BRAIN_COLLECTION
+    return requests.post(
+        url, json=payload_with_collection, headers=_brain_headers(), timeout=30
+    )
 
 
 def qdrant_scroll_by_name(substring: str, limit: int = 200) -> List[dict]:
-    payload = {"substring": substring, "limit": limit, "collection": QDRANT_COLLECTION}
+    payload = {"substring": substring, "limit": limit, "collection": BRAIN_COLLECTION}
     r = _brain_post("/admin/scroll-by-name", payload)
     if r.status_code != 200:
         raise RuntimeError(f"Brain scroll failed: {r.status_code} {r.text}")
@@ -100,7 +103,7 @@ def qdrant_scroll_by_name(substring: str, limit: int = 200) -> List[dict]:
 
 
 def qdrant_ids_for_file(file_id: str, limit: int = 500) -> List[str | int]:
-    payload = {"file_id": file_id, "limit": limit, "collection": QDRANT_COLLECTION}
+    payload = {"file_id": file_id, "limit": limit, "collection": BRAIN_COLLECTION}
     r = _brain_post("/admin/ids-for-file", payload)
     if r.status_code != 200:
         raise RuntimeError(f"Brain lookup failed: {r.status_code} {r.text}")
@@ -117,7 +120,7 @@ def delete_qdrant_entries(file_id: str) -> str:
     if not ids:
         return "No matching Qdrant entries found."
 
-    r = _brain_post("/admin/delete", {"ids": ids})
+    r = _brain_post("/admin/delete", {"ids": ids, "collection": BRAIN_COLLECTION})
     if r.status_code not in (200, 202):
         return (
             "Brain deletion failed: "
@@ -182,7 +185,7 @@ def reset_state_db() -> str:
 
 
 def reset_qdrant() -> str:
-    r = _brain_post("/admin/purge")
+    r = _brain_post("/admin/purge", {"collection": BRAIN_COLLECTION})
     if r.status_code not in (200, 202):
         return f"Failed to purge collection via brain: {r.status_code} {r.text}"
     return "Qdrant collection purged via brain."
@@ -196,7 +199,7 @@ def home():
         log_preview=read_log(),
         env_values=env,
         current_env=current_env(),
-        qdrant_collection=QDRANT_COLLECTION,
+        qdrant_collection=BRAIN_COLLECTION,
     )
 
 
@@ -234,7 +237,7 @@ def search():
         search_error=error,
         env_values=load_env_file(),
         current_env=current_env(),
-        qdrant_collection=QDRANT_COLLECTION,
+        qdrant_collection=BRAIN_COLLECTION,
     )
 
 
