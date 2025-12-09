@@ -24,7 +24,7 @@ EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.exam
 
 BRAIN_URL = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
 BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
-BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY")
+BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY", "change-me")
 QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", BRAIN_COLLECTION)
 
 NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
