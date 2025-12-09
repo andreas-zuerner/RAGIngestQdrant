@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin
@@ -22,6 +23,8 @@ DB_PATH = Path(os.environ.get("DB_PATH", PROJECT_ROOT / "DocumentDatabase/state.
 ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
 EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.example"))
 
+DEBUG = os.environ.get("DEBUG", "0") == "1"
+
 BRAIN_URL = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
 BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
 BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY", "change-me")
@@ -29,7 +32,21 @@ BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY", "change-me")
 NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
 
 
+def log_debug(msg: str):
+    if not DEBUG:
+        return
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        with LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(f"[web_gui] {ts} {msg}\n")
+    except Exception:
+        pass
+
+
 def _run_command(args: List[str]) -> Tuple[int, str]:
+    cmd_display = " ".join(args)
+    log_debug(f"[run_command] cmd={cmd_display}")
     try:
         proc = subprocess.run(
             args,
@@ -39,9 +56,14 @@ def _run_command(args: List[str]) -> Tuple[int, str]:
             stderr=subprocess.STDOUT,
             text=True,
         )
+        log_debug(f"[run_command_ok] cmd={cmd_display} exit={proc.returncode}")
         return proc.returncode, proc.stdout
-    except FileNotFoundError:
-        return 1, f"Command not found: {' '.join(args)}"
+    except FileNotFoundError as exc:
+        log_debug(f"[run_command_error] cmd={cmd_display} err={exc}")
+        return 1, f"Command not found: {cmd_display}"
+    except Exception as exc:
+        log_debug(f"[run_command_error] cmd={cmd_display} err={exc}")
+        return 1, f"Command failed: {exc}"
 
 
 def read_log() -> str:
@@ -206,6 +228,7 @@ def home():
 @app.post("/start")
 def start_scheduler():
     code, output = _run_command(["./brain_scan.sh", "start"])
+    log_debug(f"[start_scheduler] exit_code={code}")
     flash(output)
     flash(f"Exit code: {code}")
     return redirect(url_for("home"))
@@ -214,6 +237,7 @@ def start_scheduler():
 @app.post("/stop")
 def stop_scheduler():
     code, output = _run_command(["./brain_scan.sh", "stop"])
+    log_debug(f"[stop_scheduler] exit_code={code}")
     flash(output)
     flash(f"Exit code: {code}")
     return redirect(url_for("home"))
@@ -227,8 +251,12 @@ def search():
     if term:
         try:
             found = qdrant_scroll_by_name(term, limit=200)
+            log_debug(f"[search_success] term='{term}' results={len(found)}")
         except Exception as exc:
             error = str(exc)
+            log_debug(f"[search_error] term='{term}' err={exc}")
+    else:
+        log_debug("[search_skipped] empty term")
     return render_template(
         "gui.html",
         log_preview=read_log(),
@@ -246,11 +274,14 @@ def delete_file():
     file_id = request.form.get("file_id", "").strip()
     messages = []
     if not file_id:
+        log_debug("[delete_file_skipped] missing file_id")
         flash("Missing file_id")
         return redirect(url_for("home"))
     messages.append(delete_qdrant_entries(file_id))
     messages.append(delete_state_entry(file_id))
     messages.append(delete_nextcloud_images(file_id))
+    for msg in messages:
+        log_debug(f"[delete_file] file_id={file_id} msg={msg}")
     for msg in messages:
         flash(msg)
     return redirect(url_for("home"))
@@ -264,6 +295,8 @@ def update_env():
         clean_key = key[len("env_"):]
         env[clean_key] = value
     persist_env_file(env)
+    if updates:
+        log_debug(f"[env_update] keys={[k[len('env_'):] for k in updates.keys()]}")
     flash("Environment file updated.")
     return redirect(url_for("home"))
 
@@ -273,11 +306,13 @@ def add_env_var():
     key = request.form.get("new_key", "").strip()
     value = request.form.get("new_value", "")
     if not key:
+        log_debug("[env_add_skipped] empty key")
         flash("Key cannot be empty")
         return redirect(url_for("home"))
     env = load_env_file()
     env[key] = value
     persist_env_file(env)
+    log_debug(f"[env_add] key={key}")
     flash(f"Added {key} to env file.")
     return redirect(url_for("home"))
 
@@ -290,12 +325,15 @@ def reset_all():
         ENV_FILE.write_text(EXAMPLE_ENV.read_text(encoding="utf-8"), encoding="utf-8")
         messages.append("Restored .env.local from example file.")
     for msg in messages:
+        log_debug(f"[reset_all] {msg}")
+    for msg in messages:
         flash(msg)
     return redirect(url_for("home"))
 
 
 @app.post("/reload-log")
 def reload_log():
+    log_debug("[reload_log]")
     return redirect(url_for("home"))
 
 
