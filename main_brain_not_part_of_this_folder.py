@@ -390,4 +390,3 @@ async def admin_purge(_: bool = Depends(check_api_key)):
     if r.status_code not in (200, 202):
         raise HTTPException(502, f"Qdrant purge failed: {r.text}")
     return {"status":"ok","purged":True}
-
