@@ -888,7 +888,7 @@ def brain_ingest_text(
 # === Worker logic ===
 
 def process_one(conn, job_id, file_id):
-    """Verarbeitet genau einen Job end-to-end (extract -> score -> chunk -> brain)."""
+    """Run a full ingest pipeline for a single file (download, extract, chunk, context, and upload to Qdrant)."""
     from pathlib import Path
 
     # --- Helper für row-factory-agnostischen Zugriff (dict/sqlite3.Row/tuple) ---
@@ -915,6 +915,7 @@ def process_one(conn, job_id, file_id):
     if not path:
         finish_error(conn, job_id, file_id, "error_missing_path", "path column missing/empty")
         return
+    original_path = str(path)
     p = Path(path)
     temp_file: Path | None = None
     size_hint = _get(row, "size")
@@ -1180,8 +1181,9 @@ def process_one(conn, job_id, file_id):
         errors = []
         for idx, chunk in enumerate(chunks, 1):
             chunk_meta = {
-                "source": "ct108",
-                "path": str(p),
+                "source": "RAGIngestQdrant",
+                "path": original_path,
+                "document_name": posixpath.basename(original_path.rstrip("/")) or p.name,
                 "chunk_index": chunk.meta.get("chunk_index", idx),
                 "chunks_total": len(chunks),
                 "job_id": job_id,
