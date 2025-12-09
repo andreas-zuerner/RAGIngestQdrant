@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>RAG Control Panel</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f4f6f8; }
+    h1 { margin-top: 0; }
+    section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); }
+    form { margin-bottom: 8px; }
+    textarea { width: 100%; height: 240px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e0e0e0; }
+    .flash { background: #eef5ff; border: 1px solid #b3d0ff; padding: 8px; margin-bottom: 6px; }
+    .env-pair { display: flex; gap: 8px; margin-bottom: 4px; }
+    .env-pair input { width: 50%; }
+  </style>
+</head>
+<body>
+  <h1>RAG Control Panel</h1>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      {% for msg in messages %}<div class="flash">{{ msg }}</div>{% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <section>
+    <h2>Scheduler</h2>
+    <form method="post" action="{{ url_for('start_scheduler') }}">
+      <button type="submit">Start scheduler</button>
+    </form>
+    <form method="post" action="{{ url_for('stop_scheduler') }}">
+      <button type="submit">Stop scheduler</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Log</h2>
+    <form method="post" action="{{ url_for('reload_log') }}">
+      <button type="submit">Reload log</button>
+    </form>
+    <textarea readonly>{{ log_preview }}</textarea>
+  </section>
+
+  <section>
+    <h2>Search Qdrant ({{ qdrant_collection }})</h2>
+    <form method="post" action="{{ url_for('search') }}">
+      <label>Document name contains:</label>
+      <input type="text" name="search_term" value="{{ search_term or '' }}" />
+      <button type="submit">Search</button>
+    </form>
+    {% if search_error %}
+      <div class="flash">{{ search_error }}</div>
+    {% endif %}
+    {% if search_results %}
+      <table>
+        <thead><tr><th>ID</th><th>Score</th><th>Payload</th></tr></thead>
+        <tbody>
+          {% for item in search_results %}
+            <tr>
+              <td>{{ item.id }}</td>
+              <td>{{ item.score }}</td>
+              <td><pre>{{ item.payload|format_payload }}</pre></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Delete by file_id</h2>
+    <form method="post" action="{{ url_for('delete_file') }}">
+      <input type="text" name="file_id" placeholder="file_id" />
+      <button type="submit">Delete</button>
+    </form>
+    <p>Removes Qdrant points, marks the entry in state.db, and deletes matching images in Nextcloud (documents remain unchanged).</p>
+  </section>
+
+  <section>
+    <h2>Environment variables & prompts</h2>
+    <form method="post" action="{{ url_for('env_update') }}">
+      {% for key, value in env_values.items() %}
+      <div class="env-pair">
+        <input type="text" readonly value="{{ key }}" />
+        <input type="text" name="env_{{ key }}" value="{{ value }}" />
+      </div>
+      {% endfor %}
+      <button type="submit">Update .env.local</button>
+    </form>
+    <form method="post" action="{{ url_for('add_env_var') }}">
+      <input type="text" name="new_key" placeholder="NEW_KEY" />
+      <input type="text" name="new_value" placeholder="value" />
+      <button type="submit">Add variable</button>
+    </form>
+    <details>
+      <summary>Currently active environment</summary>
+      <pre>{{ current_env|format_payload }}</pre>
+    </details>
+  </section>
+
+  <section>
+    <h2>Reset RAG</h2>
+    <form method="post" action="{{ url_for('reset_all') }}">
+      <label><input type="checkbox" name="restore_defaults" /> Restore defaults from .env.local.example</label><br/>
+      <button type="submit" onclick="return confirm('This will delete Qdrant data, state.db, and Nextcloud images. Continue?');">Reset everything</button>
+    </form>
+    <p>Deletes all Qdrant entries, removes the local state database, clears images in Nextcloud ({{ qdrant_collection }} collection), and optionally restores default environment values.</p>
+  </section>
+</body>
+</html>

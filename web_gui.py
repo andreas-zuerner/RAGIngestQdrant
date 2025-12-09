@@ -1,0 +1,313 @@
+import json
+import os
+import posixpath
+import sqlite3
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import requests
+from flask import Flask, flash, redirect, render_template, request, url_for
+
+from helpers import init_conn
+from nextcloud_client import NextcloudError, env_client
+from scan_scheduler import mark_deleted
+
+app = Flask(__name__)
+app.secret_key = os.environ.get("WEB_GUI_SECRET", "dev-secret")
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+LOG_PATH = Path(os.environ.get("SCHEDULER_LOG", PROJECT_ROOT / "logs/scan_scheduler.log"))
+DB_PATH = Path(os.environ.get("DB_PATH", PROJECT_ROOT / "DocumentDatabase/state.db"))
+ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
+EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.example"))
+
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "personal_memory")
+
+NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
+
+
+def _run_command(args: List[str]) -> Tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=PROJECT_ROOT,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        return proc.returncode, proc.stdout
+    except FileNotFoundError:
+        return 1, f"Command not found: {' '.join(args)}"
+
+
+def read_log() -> str:
+    if not LOG_PATH.exists():
+        return "No log file found yet."
+    try:
+        return LOG_PATH.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:  # pragma: no cover - defensive
+        return f"Failed to read log: {exc}"
+
+
+def load_env_file() -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            if not line or line.strip().startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            env[key.strip()] = value.strip()
+    return env
+
+
+def persist_env_file(env: Dict[str, str]):
+    content = "\n".join(f"{k}={v}" for k, v in sorted(env.items())) + "\n"
+    ENV_FILE.write_text(content, encoding="utf-8")
+
+
+def current_env() -> Dict[str, str]:
+    merged = dict(os.environ)
+    merged.update(load_env_file())
+    return merged
+
+
+def qdrant_scroll_by_name(substring: str, limit: int = 200) -> List[dict]:
+    results: List[dict] = []
+    page = None
+    substring_lower = substring.lower()
+    while True:
+        body = {
+            "limit": min(limit, 64),
+            "with_payload": True,
+            "offset": page,
+        }
+        r = requests.post(
+            f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/scroll",
+            json=body,
+            timeout=30,
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"Qdrant scroll failed: {r.status_code} {r.text}")
+        data = r.json().get("result", {})
+        points = data.get("points", [])
+        for p in points:
+            payload = p.get("payload") or {}
+            file_name = str(payload.get("file_name") or payload.get("path") or payload.get("meta", {}).get("path") or "")
+            if substring_lower in file_name.lower():
+                results.append(p)
+                if len(results) >= limit:
+                    return results
+        page = data.get("next_page_offset")
+        if not page:
+            break
+    return results
+
+
+def delete_qdrant_entries(file_id: str) -> str:
+    payload_filter = {
+        "must": [
+            {"key": "meta.file_id", "match": {"value": file_id}},
+        ]
+    }
+    r = requests.post(
+        f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/delete?wait=true",
+        json={"filter": payload_filter},
+        timeout=30,
+    )
+    if r.status_code not in (200, 202):
+        return f"Qdrant deletion failed: {r.status_code} {r.text}"
+    return "Qdrant entries removed (if present)."
+
+
+def delete_nextcloud_images(file_id: str) -> str:
+    try:
+        client = env_client()
+    except Exception as exc:
+        return f"Nextcloud connection failed: {exc}"
+    removed = 0
+    for entry in client.walk(NEXTCLOUD_IMAGE_DIR):
+        name = entry.get("path") or ""
+        if file_id in name:
+            try:
+                client.delete(name)
+                removed += 1
+            except Exception:
+                continue
+    return f"Removed {removed} image(s) from Nextcloud."
+
+
+def reset_nextcloud_images() -> str:
+    try:
+        client = env_client()
+    except Exception as exc:
+        return f"Nextcloud connection failed: {exc}"
+    removed = 0
+    for entry in client.walk(NEXTCLOUD_IMAGE_DIR):
+        path = entry.get("path")
+        if not path:
+            continue
+        try:
+            client.delete(path)
+            removed += 1
+        except Exception:
+            continue
+    return f"Deleted {removed} items from {NEXTCLOUD_IMAGE_DIR}."
+
+
+def delete_state_entry(file_id: str) -> str:
+    if not DB_PATH.exists():
+        return "Database not found."
+    conn = init_conn(DB_PATH)
+    try:
+        if mark_deleted(conn, file_id):
+            conn.commit()
+            return "Marked as deleted in state.db."
+        return "Entry not found in state.db."
+    finally:
+        conn.close()
+
+
+def reset_state_db() -> str:
+    if DB_PATH.exists():
+        DB_PATH.unlink()
+        return f"Removed {DB_PATH}"
+    return "No database file to remove."
+
+
+def reset_qdrant() -> str:
+    r = requests.delete(f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}", timeout=30)
+    if r.status_code not in (200, 202, 404):
+        return f"Failed to drop collection: {r.status_code} {r.text}"
+    return "Qdrant collection dropped (will be recreated on next ingest)."
+
+
+@app.route("/")
+def home():
+    env = load_env_file()
+    return render_template(
+        "gui.html",
+        log_preview=read_log(),
+        env_values=env,
+        current_env=current_env(),
+        qdrant_collection=QDRANT_COLLECTION,
+    )
+
+
+@app.post("/start")
+def start_scheduler():
+    code, output = _run_command(["./brain_scan.sh", "start"])
+    flash(output)
+    flash(f"Exit code: {code}")
+    return redirect(url_for("home"))
+
+
+@app.post("/stop")
+def stop_scheduler():
+    code, output = _run_command(["./brain_scan.sh", "stop"])
+    flash(output)
+    flash(f"Exit code: {code}")
+    return redirect(url_for("home"))
+
+
+@app.post("/search")
+def search():
+    term = request.form.get("search_term", "")
+    found = []
+    error = None
+    if term:
+        try:
+            found = qdrant_scroll_by_name(term, limit=200)
+        except Exception as exc:
+            error = str(exc)
+    return render_template(
+        "gui.html",
+        log_preview=read_log(),
+        search_term=term,
+        search_results=found,
+        search_error=error,
+        env_values=load_env_file(),
+        current_env=current_env(),
+        qdrant_collection=QDRANT_COLLECTION,
+    )
+
+
+@app.post("/delete")
+def delete_file():
+    file_id = request.form.get("file_id", "").strip()
+    messages = []
+    if not file_id:
+        flash("Missing file_id")
+        return redirect(url_for("home"))
+    messages.append(delete_qdrant_entries(file_id))
+    messages.append(delete_state_entry(file_id))
+    messages.append(delete_nextcloud_images(file_id))
+    for msg in messages:
+        flash(msg)
+    return redirect(url_for("home"))
+
+
+@app.post("/env/update")
+def update_env():
+    env = load_env_file()
+    updates = {k: v for k, v in request.form.items() if k.startswith("env_")}
+    for key, value in updates.items():
+        clean_key = key[len("env_"):]
+        env[clean_key] = value
+    persist_env_file(env)
+    flash("Environment file updated.")
+    return redirect(url_for("home"))
+
+
+@app.post("/env/add")
+def add_env_var():
+    key = request.form.get("new_key", "").strip()
+    value = request.form.get("new_value", "")
+    if not key:
+        flash("Key cannot be empty")
+        return redirect(url_for("home"))
+    env = load_env_file()
+    env[key] = value
+    persist_env_file(env)
+    flash(f"Added {key} to env file.")
+    return redirect(url_for("home"))
+
+
+@app.post("/reset")
+def reset_all():
+    restore_defaults = request.form.get("restore_defaults") == "on"
+    messages = [reset_qdrant(), reset_state_db(), reset_nextcloud_images()]
+    if restore_defaults and EXAMPLE_ENV.exists():
+        ENV_FILE.write_text(EXAMPLE_ENV.read_text(encoding="utf-8"), encoding="utf-8")
+        messages.append("Restored .env.local from example file.")
+    for msg in messages:
+        flash(msg)
+    return redirect(url_for("home"))
+
+
+@app.post("/reload-log")
+def reload_log():
+    return redirect(url_for("home"))
+
+
+def format_payload(payload: Optional[dict]) -> str:
+    if not payload:
+        return ""
+    try:
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    except Exception:
+        return str(payload)
+
+
+app.jinja_env.filters["format_payload"] = format_payload
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("WEB_GUI_PORT", "8088"))
+    host = os.environ.get("WEB_GUI_HOST", "0.0.0.0")
+    debug = os.environ.get("WEB_GUI_DEBUG", "false").lower() in {"1", "true", "yes"}
+    app.run(host=host, port=port, debug=debug)
