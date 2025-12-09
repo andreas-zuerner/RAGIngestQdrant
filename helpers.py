@@ -65,6 +65,16 @@ def ensure_db(conn: sqlite3.Connection):
             step TEXT,
             detail TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT NOT NULL,
+            label TEXT,
+            reference TEXT NOT NULL,
+            mime TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+        );
         """
     )
     conn.commit()
@@ -86,6 +96,8 @@ def ensure_db(conn: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
         CREATE INDEX IF NOT EXISTS idx_files_inode_device ON files(device, inode);
         CREATE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash);
+
+        CREATE INDEX IF NOT EXISTS idx_images_file_id ON images(file_id);
 
         CREATE INDEX IF NOT EXISTS idx_jobs_q ON jobs(status, run_not_before);
         CREATE INDEX IF NOT EXISTS idx_jobs_enqueue ON jobs(enqueue_at, job_id);
