@@ -12,12 +12,20 @@ def utcnow_iso():
 def ensure_db(conn: sqlite3.Connection):
     """Create core tables and indexes if missing (idempotent)."""
 
-    def column_exists(table: str, column: str) -> bool:
-        cur = conn.execute(f"PRAGMA table_info({table})")
-        for row in cur.fetchall():
-            if len(row) > 1 and row[1] == column:
+    def column_exists(table: str, column: str, conn: sqlite3.Connection) -> bool:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        for row in rows:
+            # row kann tuple, sqlite3.Row oder dict sein
+            try:
+                # bevorzugt per Spaltennamen
+                name = row["name"]
+            except Exception:
+                # fallback auf positional index (cid, name, type, ...)
+                name = row[1]
+            if name == column:
                 return True
         return False
+
 
     conn.executescript(
         """
