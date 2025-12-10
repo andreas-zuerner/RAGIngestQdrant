@@ -37,6 +37,20 @@ def _extract_image_refs(text: str) -> List[str]:
     return images
 
 
+EXTRACTED_IMAGES_SECTION = re.compile(
+    r"\n## Extracted images\s*\n(?:!\[[^\]]*\]\([^\)]+\)\s*\n?)+\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_extracted_images_section(text: str) -> str:
+    """Remove trailing image listing sections from docling outputs."""
+    if not isinstance(text, str):
+        return "" if text is None else str(text)
+    cleaned = EXTRACTED_IMAGES_SECTION.sub("", text)
+    return cleaned.rstrip()
+
+
 def _reconstruct_full_text(chunks: List[ChunkItem]) -> str:
     """Rebuild the best-effort full document text from individual chunks."""
     ordered = sorted(
@@ -116,13 +130,14 @@ def add_context_to_chunks(
     full_doc = full_doc_candidates[0] if full_doc_candidates else _reconstruct_full_text(chunks)
     if not isinstance(full_doc, str):
         full_doc = str(full_doc or "")
+    full_doc = _strip_extracted_images_section(full_doc)
 
     sorted_chunks = _sort_chunks(chunks)
     total_chunks = len(sorted_chunks)
 
     results: List[Dict[str, Any]] = []
     for idx, chunk in enumerate(sorted_chunks):
-        chunk_text = chunk.content or ""
+        chunk_text = _strip_extracted_images_section(chunk.content or "")
         image_refs = _extract_image_refs(chunk_text)
 
         if not chunk_text.strip():

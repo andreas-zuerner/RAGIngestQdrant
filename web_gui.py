@@ -32,7 +32,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("WEB_GUI_SECRET", "dev-secret")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-LOG_PATH = Path(os.environ.get("SCHEDULER_LOG", PROJECT_ROOT / "log/scan_scheduler.log"))
+LOG_PATH = Path(os.environ.get("SCHEDULER_LOG", PROJECT_ROOT / "logs/scan_scheduler.log"))
 DB_PATH = Path(os.environ.get("DB_PATH", PROJECT_ROOT / "DocumentDatabase/state.db"))
 ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
 EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.example"))
@@ -214,6 +214,23 @@ def clear_image_records(file_id: str | None = None) -> str:
         conn.close()
 
 
+def _image_parent_directories(references: List[str]) -> List[str]:
+    base_dir = posixpath.normpath(
+        NEXTCLOUD_IMAGE_DIR if NEXTCLOUD_IMAGE_DIR.startswith("/") else f"/{NEXTCLOUD_IMAGE_DIR}"
+    )
+    parents: List[str] = []
+    for reference in references:
+        if not reference:
+            continue
+        remote_path = reference
+        if not remote_path.startswith("/"):
+            remote_path = posixpath.normpath(f"/{NEXTCLOUD_IMAGE_DIR}/{remote_path}")
+        parent = posixpath.dirname(remote_path.rstrip("/"))
+        if parent and parent != "/" and parent.startswith(base_dir):
+            parents.append(parent)
+    return sorted(set(parents), key=len, reverse=True)
+
+
 def delete_nextcloud_images(file_id: str, references: Optional[List[str]] = None) -> str:
     try:
         client = env_client()
@@ -232,7 +249,17 @@ def delete_nextcloud_images(file_id: str, references: Optional[List[str]] = None
             removed += 1
         except Exception:
             continue
-    return f"Removed {removed} image(s) from Nextcloud ({len(targets)} recorded)."
+    removed_dirs = 0
+    for parent in _image_parent_directories(targets):
+        try:
+            client.delete(parent)
+            removed_dirs += 1
+        except Exception:
+            continue
+    return (
+        f"Removed {removed} image(s) from Nextcloud ({len(targets)} recorded)."
+        f" Deleted {removed_dirs} folder(s)."
+    )
 
 def delete_images_for_file(file_id: str) -> Tuple[str, str]:
     """Remove a file's images from Nextcloud and the state database."""

@@ -14,7 +14,14 @@ return (async () => {
   const OVERLAP_RATIO = 0.2;                                      // 20 % Overlap von WINDOW_SIZE
 
   // ================== Eingang laden ==================
-  const fullText = $json.fullText || $json.text || '';
+  function stripExtractedImagesSection(text) {
+    if (!text || typeof text !== 'string') return '';
+    const pattern = /\n## Extracted images\s*\n(?:!\[[^\]]*\]\([^\)]+\)\s*\n?)+\s*$/i;
+    return text.replace(pattern, '').trimEnd();
+  }
+
+  const fullTextRaw = $json.fullText || $json.text || '';
+  const fullText = stripExtractedImagesSection(fullTextRaw);
   const fileName = $json.filename || '';
   const filePath = $json.filepath || '';
   if (!fullText || typeof fullText !== 'string') {

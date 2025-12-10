@@ -26,6 +26,12 @@ return (async () => {
   // ================== Hilfsfunktionen ==================
 
   // Volltext rekonstruieren, falls er nicht als fullText/text mitkommt
+  function stripExtractedImagesSection(text) {
+    if (!text || typeof text !== 'string') return '';
+    const pattern = /\n## Extracted images\s*\n(?:!\[[^\]]*\]\([^\)]+\)\s*\n?)+\s*$/i;
+    return text.replace(pattern, '').trimEnd();
+  }
+
   function reconstructFullText(chunks) {
     const sorted = [...chunks].sort((a, b) => {
       const sa = (typeof a.start === 'number') ? a.start : Number.MAX_SAFE_INTEGER;
@@ -146,6 +152,8 @@ CONTEXT (${CONTEXT_MIN_WORDS}-${CONTEXT_MAX_WORDS} words):`;
     fullDoc = String(fullDoc || '');
   }
 
+  fullDoc = stripExtractedImagesSection(fullDoc);
+
   const totalChunks = chunks.length;
 
   // ================== Hauptlogik: pro Chunk Kontext erzeugen ==================
@@ -163,7 +171,7 @@ CONTEXT (${CONTEXT_MIN_WORDS}-${CONTEXT_MAX_WORDS} words):`;
 
   for (let i = 0; i < sortedChunks.length; i++) {
     const c = sortedChunks[i];
-    const chunkText = c.content || '';
+    const chunkText = stripExtractedImagesSection(c.content || '');
 
     // Bildreferenzen aus dem Chunktext extrahieren
     const imageRefs = extractImageRefsFromChunk(chunkText);

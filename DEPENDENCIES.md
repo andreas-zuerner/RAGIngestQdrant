@@ -101,7 +101,7 @@ cp .env.local.example .env.local
    ./brain_scan.sh start
    ```
 
-   Der Scheduler legt Logs unter `log/scan_scheduler.log` ab.
+   Der Scheduler legt Logs unter `logs/scan_scheduler.log` ab.
 
 4. Optional können Sie den Status prüfen oder den Prozess stoppen:
 

@@ -1,4 +1,5 @@
 import dataclasses
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,6 +17,11 @@ MATCH_KEY_MIN_LEN = 30
 LONG_CHUNK_RATIO = 0.9
 OVERLAP_RATIO = 0.2
 LONG_CHUNK_NEXT_OVERLAP_RATIO = 0.05
+
+EXTRACTED_IMAGES_SECTION = re.compile(
+    r"\n## Extracted images\s*\n(?:!\[[^\]]*\]\([^\)]+\)\s*\n?)+\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -57,6 +63,12 @@ class Chunk:
 def _clean_text_for_match(text: str) -> str:
     """Normalize text for deterministic matching while keeping length stable."""
     return text.replace("\r", " ").replace("\n", " ")
+
+
+def _strip_extracted_images_section(text: str) -> str:
+    """Remove trailing image listings appended by docling image extraction."""
+    cleaned = EXTRACTED_IMAGES_SECTION.sub("", text or "")
+    return cleaned.rstrip()
 
 
 def _build_prompt(segment: str) -> str:
@@ -118,6 +130,7 @@ def _chunk_full_text(
     window_size: int = WINDOW_SIZE_CHARS,
     timeout: float = 120.0,
 ) -> List[Chunk]:
+    full_text = _strip_extracted_images_section(full_text)
     if not full_text or not full_text.strip():
         return []
 

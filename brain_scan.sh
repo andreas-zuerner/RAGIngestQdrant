@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$ROOT_DIR/.env.local"
 PID_DIR="$ROOT_DIR/.run"
 PID_FILE="$PID_DIR/scan_scheduler.pid"
-LOG_DIR="$ROOT_DIR/log"
+LOG_DIR="$ROOT_DIR/logs"
 LOG_FILE="$LOG_DIR/scan_scheduler.log"
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 

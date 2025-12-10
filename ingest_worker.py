@@ -503,12 +503,13 @@ class DoclingServeIngestor:
             stored_images.extend(inline_images)
 
         text_with_refs = self._inject_image_refs(text, stored_images)
+        text_for_chunks = self._strip_extracted_images_section(text_with_refs)
         mime = payload.get("media_type") or payload.get("mime_type")
-        chunks = self._chunk_text(text_with_refs)
+        chunks = self._chunk_text(text_for_chunks)
         if debug:
-            self._write_debug_dump(base_slug, text_with_refs, stored_images, effective_debug_dir)
+            self._write_debug_dump(base_slug, text_for_chunks, stored_images, effective_debug_dir)
         return DoclingExtraction(
-            text=text_with_refs,
+            text=text_for_chunks,
             mime_type=mime,
             chunks=chunks,
             images=stored_images,
@@ -685,10 +686,23 @@ class DoclingServeIngestor:
             except Exception as exc:
                 log(f"[image_upload_failed] {remote_path}: {exc}")
 
-    def _write_debug_dump(self, slug: str, text: str, images: List[Dict[str, object]], debug_dir: Path):
+    def _write_debug_dump(
+        self,
+        slug: str,
+        text: str,
+        images: List[Dict[str, object]],
+        debug_dir: Path,
+        *,
+        chunk_texts: List[str] | None = None,
+    ):
         try:
             doc_dir = ensure_dir(debug_dir / slug)
             (doc_dir / "extracted.txt").write_text(text or "", encoding="utf-8")
+            if chunk_texts:
+                chunk_lines = []
+                for idx, chunk in enumerate(chunk_texts, start=1):
+                    chunk_lines.append(f"### Chunk {idx}\n{chunk}\n")
+                (doc_dir / "chunks.txt").write_text("\n".join(chunk_lines), encoding="utf-8")
         except Exception as exc:
             log(f"[docling_debug_write_failed] slug={slug} err={exc}")
 
@@ -704,6 +718,16 @@ class DoclingServeIngestor:
             ref = img.get("reference", "")
             lines.append(f"![{label}]({ref})")
         return "\n".join(lines).strip()
+
+    def _strip_extracted_images_section(self, text: str) -> str:
+        if not text:
+            return text or ""
+        pattern = re.compile(
+            r"\n## Extracted images\s*\n(?:!\[[^\]]*\]\([^\)]+\)\s*\n?)+\s*$",
+            re.IGNORECASE,
+        )
+        cleaned = pattern.sub("", text)
+        return cleaned.rstrip()
 
     def _chunk_text(self, text: str) -> List[DoclingChunk]:
         chunks: List[DoclingChunk] = []
@@ -1247,6 +1271,15 @@ def process_one(conn, job_id, file_id):
             )
         except Exception:
             pass
+
+        if DEBUG:
+            ingestor._write_debug_dump(
+                extraction.slug,
+                extraction.text,
+                extraction.images,
+                Path("logs") / "docling",
+                chunk_texts=chunk_texts,
+            )
 
         chunks: List[DoclingChunk] = []
         for idx, chunk_text in enumerate(chunk_texts, 1):
