@@ -19,9 +19,11 @@
     .env-pair { display: flex; gap: 8px; margin-bottom: 4px; }
     .env-pair input { width: 50%; }
     .grid-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
-    .grid-prompts-log { display: grid; grid-template-columns: 0.4fr 0.6fr; gap: 16px; align-items: start; }
+    .grid-prompts-log { display: grid; grid-template-columns: 0.4fr 0.6fr; gap: 16px; align-items: stretch; }
     @media (max-width: 900px) { .grid-prompts-log { grid-template-columns: 1fr; } }
-    .search-layout { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; align-items: start; }
+    .grid-prompts-log section { display: flex; flex-direction: column; height: 100%; }
+    .prompt-area form { display: flex; flex-direction: column; gap: 8px; height: 100%; }
+    .search-layout { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; align-items: start; }
     .search-box { display: flex; flex-direction: column; gap: 8px; }
     .results-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
     .result-group { border: 1px solid #d6d6d6; background: #f8fafc; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
@@ -41,7 +43,7 @@
     .detail-panel pre { white-space: pre-wrap; word-break: break-word; }
     #detail-content { white-space: pre-wrap; word-break: break-word; }
     .detail-header { font-weight: bold; margin-bottom: 6px; }
-    .textarea-log { height: 360px; }
+    .textarea-log { height: 100%; min-height: 360px; flex: 1; }
     .prompt-area textarea { height: 160px; }
   </style>
 </head>
@@ -77,7 +79,7 @@
       </form>
     </section>
 
-    <section>
+    <section class="log-area">
       <h2>Log (latest 50 lines, newest first)</h2>
       <textarea class="textarea-log" id="log-display" readonly>{{ log_preview }}</textarea>
     </section>
@@ -154,6 +156,8 @@
     let groupedResults = [];
     let activeGroup = null;
     let activePointIndex = null;
+    let expandedGroups = new Set();
+    let hasInitializedGroups = false;
 
     const metaPayload = (item) => item?.payload?.meta || item?.payload?.metadata || {};
 
@@ -240,16 +244,32 @@
       if (updateSelection) {
         activePointIndex = index;
         activeGroup = fileId;
+        expandedGroups.add(fileId);
         renderResults();
       }
     }
 
     function selectGroup(fileId) {
-      activeGroup = fileId;
       const group = groupedResults.find((g) => g.fileId === fileId);
-      activePointIndex = group?.points?.[0]?.originalIndex ?? null;
+      if (!group) return;
+
+      const isExpanded = expandedGroups.has(fileId);
+      if (isExpanded) {
+        expandedGroups.delete(fileId);
+        if (activeGroup === fileId) {
+          activeGroup = null;
+        }
+        if (group.points.some((p) => p.originalIndex === activePointIndex)) {
+          activePointIndex = null;
+        }
+      } else {
+        expandedGroups.add(fileId);
+        activeGroup = fileId;
+        activePointIndex = group.points?.[0]?.originalIndex ?? activePointIndex;
+      }
+
       renderResults();
-      if (activePointIndex !== null) {
+      if (!isExpanded && activePointIndex !== null) {
         showResultDetails(activePointIndex, false);
       }
     }
@@ -262,10 +282,17 @@
       }
 
       groupedResults = buildGroupedResults(searchResults);
-      if (!activeGroup && groupedResults.length) {
+      const availableGroupIds = new Set(groupedResults.map((g) => g.fileId));
+      expandedGroups = new Set([...expandedGroups].filter((id) => availableGroupIds.has(id)));
+
+      if (!hasInitializedGroups && groupedResults.length) {
+        expandedGroups.add(groupedResults[0].fileId);
         activeGroup = groupedResults[0].fileId;
+        hasInitializedGroups = true;
       }
-      const currentGroup = groupedResults.find((g) => g.fileId === activeGroup);
+
+      const activeGroupId = activeGroup || [...expandedGroups][0] || null;
+      const currentGroup = groupedResults.find((g) => g.fileId === activeGroupId);
       if (currentGroup && currentGroup.points.length) {
         const hasActivePoint = currentGroup.points.some((p) => p.originalIndex === activePointIndex);
         if (!hasActivePoint) {
@@ -293,13 +320,14 @@
 
         const pill = document.createElement('span');
         pill.className = 'toggle-pill';
-        pill.textContent = activeGroup === group.fileId ? 'Hide points' : 'Show points';
+        const isExpanded = expandedGroups.has(group.fileId);
+        pill.textContent = isExpanded ? 'Hide points' : 'Show points';
 
         header.appendChild(meta);
         header.appendChild(pill);
 
         const pointsWrapper = document.createElement('div');
-        pointsWrapper.style.display = activeGroup === group.fileId ? 'block' : 'none';
+        pointsWrapper.style.display = isExpanded ? 'block' : 'none';
 
         const pointsList = document.createElement('ul');
         pointsList.className = 'points-list';
