@@ -408,6 +408,16 @@ def replace_file_images(conn, file_id: str, images: List[Dict[str, object]] | No
         log(f"[image_record_failed] file_id={file_id} err={exc}")
         traceback.print_exc()
 
+
+def sanitize_images(images: List[Dict[str, object]] | None) -> List[Dict[str, object]]:
+    sanitized: List[Dict[str, object]] = []
+    for img in images or []:
+        if not isinstance(img, dict):
+            continue
+        clean = {k: v for k, v in img.items() if k not in {"data"}}
+        sanitized.append(clean)
+    return sanitized
+
 @dataclass
 class DoclingChunk:
     text: str
@@ -420,6 +430,7 @@ class DoclingExtraction:
     mime_type: Optional[str]
     chunks: List[DoclingChunk]
     images: List[Dict[str, object]]
+    slug: str
 
 
 class DoclingServeIngestor:
@@ -444,7 +455,14 @@ class DoclingServeIngestor:
         self.nextcloud_client = nextcloud_client
         self.remote_image_dir = remote_image_dir or str(image_dir)
 
-    def extract(self, file_path: Path) -> DoclingExtraction:
+    def extract(
+        self,
+        file_path: Path,
+        *,
+        upload_images: bool = True,
+        debug: bool = False,
+        debug_dir: Path | None = None,
+    ) -> DoclingExtraction:
         if not file_path.exists():
             raise FileNotFoundError(file_path)
 
@@ -469,17 +487,33 @@ class DoclingServeIngestor:
 
         text = self._extract_text(payload)
         base_slug = slugify(file_path.stem)
+        effective_debug_dir = debug_dir or Path("logs") / "docling"
 
-        text, inline_images = self._extract_inline_images(text, base_slug)
+        text, inline_images = self._extract_inline_images(
+            text, base_slug, upload_images=upload_images, debug_dir=effective_debug_dir if debug else None
+        )
         images_payload = payload.get("images") or payload.get("media", {}).get("images") or []
-        stored_images = self._store_images(images_payload, base_slug)
+        stored_images = self._store_images(
+            images_payload,
+            base_slug,
+            upload=upload_images,
+            debug_dir=effective_debug_dir if debug else None,
+        )
         if inline_images:
             stored_images.extend(inline_images)
 
         text_with_refs = self._inject_image_refs(text, stored_images)
         mime = payload.get("media_type") or payload.get("mime_type")
         chunks = self._chunk_text(text_with_refs)
-        return DoclingExtraction(text=text_with_refs, mime_type=mime, chunks=chunks, images=stored_images)
+        if debug:
+            self._write_debug_dump(base_slug, text_with_refs, stored_images, effective_debug_dir)
+        return DoclingExtraction(
+            text=text_with_refs,
+            mime_type=mime,
+            chunks=chunks,
+            images=stored_images,
+            slug=base_slug,
+        )
 
     def _extract_text(self, payload: Dict[str, object]) -> str:
         # 1) Neues docling-Schema: Text liegt in payload["document"][...]
@@ -501,7 +535,14 @@ class DoclingServeIngestor:
         suffix = f"; {detail}" if detail else ""
         raise RuntimeError(f"docling-serve response did not contain textual content{suffix}")
 
-    def _store_images(self, images_payload, base_slug: str) -> List[Dict[str, object]]:
+    def _store_images(
+        self,
+        images_payload,
+        base_slug: str,
+        *,
+        upload: bool = True,
+        debug_dir: Path | None = None,
+    ) -> List[Dict[str, object]]:
         stored: List[Dict[str, object]] = []
         if not images_payload:
             return stored
@@ -509,6 +550,8 @@ class DoclingServeIngestor:
         items = images_payload
         if isinstance(images_payload, dict):
             items = [{"name": name, "data": data} for name, data in images_payload.items()]
+
+        remote_base = posixpath.normpath(f"/{self.remote_image_dir}/{base_slug}")
 
         for idx, item in enumerate(items, start=1):
             if not isinstance(item, dict):
@@ -520,26 +563,40 @@ class DoclingServeIngestor:
             mime = item.get("mime") or item.get("content_type") or item.get("type")
             ext = self._extension_from_mime(mime) or (Path(name).suffix if name else "") or ".bin"
             fname = name or f"{base_slug}-{idx}{ext if ext.startswith('.') else '.' + ext}"
-            target = self.image_dir / fname
-            reference = str(target)
+            reference = posixpath.normpath(f"{remote_base}/{fname}")
+            uploaded = False
+            target = ensure_dir(self.image_dir / base_slug) / fname
             try:
                 if self.nextcloud_client:
-                    remote_path = posixpath.normpath(f"/{self.remote_image_dir}/{fname}")
-                    log(f"[image_upload] pushing {fname} to Nextcloud {remote_path}")
-                    self.nextcloud_client.upload_bytes(remote_path, raw)
-                    reference = remote_path
+                    if upload:
+                        log(f"[image_upload] pushing {fname} to Nextcloud {reference}")
+                        self.nextcloud_client.upload_bytes(reference, raw)
+                        uploaded = True
                 else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(raw)
+                    target = ensure_dir(self.image_dir / base_slug) / fname
+                    if upload:
+                        target.write_bytes(raw)
+                        reference = str(target)
+                        uploaded = True
             except Exception as exc:
                 log(f"[image_store_failed] {target}: {exc}")
                 continue
+
+            if debug_dir:
+                try:
+                    debug_target = ensure_dir(debug_dir / base_slug) / fname
+                    debug_target.write_bytes(raw)
+                except Exception:
+                    log(f"[image_debug_store_failed] base_slug={base_slug} file={fname}")
+
             stored.append(
                 {
                     "label": fname,
                     "path": reference,
                     "reference": reference,
                     "mime": mime or mimetypes.guess_type(fname)[0] or "application/octet-stream",
+                    "data": raw,
+                    "uploaded": uploaded,
                 }
             )
         return stored
@@ -563,7 +620,9 @@ class DoclingServeIngestor:
         ext = mimetypes.guess_extension(mime)
         return ext or ""
 
-    def _extract_inline_images(self, text: str, base_slug: str) -> Tuple[str, List[Dict[str, object]]]:
+    def _extract_inline_images(
+        self, text: str, base_slug: str, *, upload_images: bool, debug_dir: Path | None
+    ) -> Tuple[str, List[Dict[str, object]]]:
         if not text:
             return text or "", []
 
@@ -584,7 +643,11 @@ class DoclingServeIngestor:
             items.append({"name": identifier, "data": data_uri, "mime": "image/png"})
             item_indices.append(len(items) - 1)
 
-        stored_images = self._store_images(items, base_slug) if items else []
+        stored_images = (
+            self._store_images(items, base_slug, upload=upload_images, debug_dir=debug_dir)
+            if items
+            else []
+        )
         last_end = 0
         cleaned_parts: List[str] = []
 
@@ -600,6 +663,34 @@ class DoclingServeIngestor:
 
         cleaned_parts.append(text[last_end:])
         return "".join(cleaned_parts), stored_images
+
+    def upload_images(self, extraction: DoclingExtraction):
+        if not extraction.images:
+            return
+        for img in extraction.images:
+            if img.get("uploaded"):
+                continue
+            data = img.get("data")
+            fname = img.get("label") or "image"
+            remote_base = posixpath.normpath(f"/{self.remote_image_dir}/{extraction.slug}")
+            remote_path = posixpath.normpath(f"{remote_base}/{fname}")
+            if not data or not self.nextcloud_client:
+                continue
+            try:
+                log(f"[image_upload] pushing {fname} to Nextcloud {remote_path}")
+                self.nextcloud_client.upload_bytes(remote_path, data)
+                img["reference"] = remote_path
+                img["path"] = remote_path
+                img["uploaded"] = True
+            except Exception as exc:
+                log(f"[image_upload_failed] {remote_path}: {exc}")
+
+    def _write_debug_dump(self, slug: str, text: str, images: List[Dict[str, object]], debug_dir: Path):
+        try:
+            doc_dir = ensure_dir(debug_dir / slug)
+            (doc_dir / "extracted.txt").write_text(text or "", encoding="utf-8")
+        except Exception as exc:
+            log(f"[docling_debug_write_failed] slug={slug} err={exc}")
 
     def _inject_image_refs(self, text: str, images: List[Dict[str, object]]) -> str:
         if not images:
@@ -986,7 +1077,7 @@ def process_one(conn, job_id, file_id):
         docling_error: Optional[Exception] = None
         docling_source = "docling-serve"
         try:
-            extraction = ingestor.extract(p)
+            extraction = ingestor.extract(p, upload_images=False, debug=DEBUG)
         except Exception as e:
             docling_error = e
             log(f"[extract_error] job_id={job_id} file_id={file_id} path={p} err={e}")
@@ -1012,6 +1103,7 @@ def process_one(conn, job_id, file_id):
                     mime_type="text/plain",
                     chunks=chunks,
                     images=[],
+                    slug=slugify(p.stem),
                 )
                 docling_source = "pdf_fallback"
 
@@ -1037,8 +1129,6 @@ def process_one(conn, job_id, file_id):
             "extract_ok",
             f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}",
         )
-
-        replace_file_images(conn, file_id, extraction.images)
 
         if not clean or len(clean) < MIN_CHARS:
             update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
@@ -1082,6 +1172,14 @@ def process_one(conn, job_id, file_id):
             update_file_result(conn, file_id, {"accepted": False, "ai": ai, "reason": "below_threshold", "threshold": RELEVANCE_THRESHOLD})
             log_decision(conn, job_id, file_id, "threshold", f"skip: is_relevant={is_rel} conf={conf} < RELEVANCE_THRESHOLD={RELEVANCE_THRESHOLD}")
             finish_success(conn, job_id, file_id, "ai_not_relevant")
+            return
+
+        try:
+            ingestor.upload_images(extraction)
+            replace_file_images(conn, file_id, extraction.images)
+        except Exception as exc:
+            update_file_result(conn, file_id, {"accepted": False, "error": f"image_upload_failed: {exc}"})
+            finish_error(conn, job_id, file_id, "error_image_upload", f"image_upload_failed: {exc}")
             return
 
         log(
@@ -1244,6 +1342,8 @@ def process_one(conn, job_id, file_id):
                 )
                 errors.append(f"chunk {idx} error: {e}")
 
+        sanitized_images = sanitize_images(extraction.images)
+
         result = {
             "accepted": len(errors) == 0,
             "ai": ai,
@@ -1252,9 +1352,9 @@ def process_one(conn, job_id, file_id):
                 "mime": extraction.mime_type,
                 "source": docling_source,
                 "chunks": [chunk.meta for chunk in chunks],
-                "images": extraction.images,
+                "images": sanitized_images,
             },
-            "images": extraction.images,
+            "images": sanitized_images,
         }
         if errors:
             result["errors"] = errors
