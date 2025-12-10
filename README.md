@@ -84,9 +84,13 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
   lokalen Queue.
 * `ingest_worker.py` nutzt ebenfalls denselben Nextcloud-Client: Fehlt eine
   Datei lokal, wird sie per `download_to_temp(...)` aus dem Dokumente-Ordner
-  nachgeladen. Zusätzlich speichert der Docling-Ingestor erkannte Bilder via
-  `upload_bytes(...)` in den dedizierten Nextcloud-Bilder-Ordner und fügt die
-  Referenzen in den extrahierten Text ein.
+  nachgeladen. Erkannte docling-Bilder werden erst nach der LLM-Relevanzprüfung
+  (Resultat `TRUE`) in den dedizierten Nextcloud-Bilder-Ordner hochgeladen; sie
+  landen dort in einem eigenen Unterordner pro Dokument (z. B.
+  `/RAGimages/<slug>/...`) und die Referenzen werden dann im extrahierten Text
+  aktualisiert. Bei aktivem `DEBUG=1` legt der Worker die von docling gelieferten
+  Rohdaten zusätzlich in `logs/docling/<slug>/` ab (Text + PNG-Dateien),
+  getrennt nach Dokumenten.
 * Die Nextcloud-Instanz ist über `http://192.168.177.133:8080` erreichbar. Der
   Standardbenutzer lautet `andreas`; der dazugehörige API-Token wird in
   `.env.local` unter `TOKEN` (optional auch `NEXTCLOUD_TOKEN`) hinterlegt und
