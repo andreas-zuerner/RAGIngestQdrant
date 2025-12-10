@@ -74,7 +74,7 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
 * Der Scheduler durchsucht standardmäßig zwei Nextcloud-Ordner per WebDAV: einen
   Dokumente-Ordner (`NEXTCLOUD_DOC_DIR`, Default `/RAGdocuments`) und
   einen Bilder-Ordner (`NEXTCLOUD_IMAGE_DIR`, Default
-  `/RAGimages`). Beide Pfade lassen sich alternativ über
+  `/RAG-images`). Beide Pfade lassen sich alternativ über
   `ROOT_DIRS` (kommagetrennt) überschreiben. Der Bilder-Ordner wird von der
   SQLite-Datenbank genauso überwacht wie der Dokument-Ordner und kann dadurch
   bequem mit einer Admin-Oberfläche wie phpLiteAdmin gepflegt werden.
@@ -87,7 +87,7 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
   nachgeladen. Erkannte docling-Bilder werden erst nach der LLM-Relevanzprüfung
   (Resultat `TRUE`) in den dedizierten Nextcloud-Bilder-Ordner hochgeladen; sie
   landen dort in einem eigenen Unterordner pro Dokument (z. B.
-  `/RAGimages/<slug>/...`) und die Referenzen werden dann im extrahierten Text
+  `/RAG-images/<slug>/...`) und die Referenzen werden dann im extrahierten Text
   aktualisiert. Bei aktivem `DEBUG=1` legt der Worker die von docling gelieferten
   Rohdaten zusätzlich in `logs/docling/<slug>/` ab (Text + PNG-Dateien),
   getrennt nach Dokumenten.
@@ -127,7 +127,7 @@ WEB_GUI_SECRET=change-me WEB_GUI_PORT=8088 WEB_GUI_HOST=0.0.0.0 \
 python web_gui.py
 ```
 
-The GUI reads and writes `.env.local` by default (controlled via `ENV_FILE`) and requires access to Qdrant, Nextcloud, and the local `DocumentDatabase/state.db`. The reset action drops the configured Qdrant collection, removes the state database, clears the `RAGimages` folder in Nextcloud, and can optionally restore `.env.local` from `.env.local.example`.
+The GUI reads and writes `.env.local` by default (controlled via `ENV_FILE`) and requires access to Qdrant, Nextcloud, and the local `DocumentDatabase/state.db`. The reset action drops the configured Qdrant collection, removes the state database, clears the `RAG-images` folder in Nextcloud, and can optionally restore `.env.local` from `.env.local.example`.
 
 ### LAN / reverse-proxy deployment (Apache or lighttpd)
 

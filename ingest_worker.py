@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from nextcloud_client import env_client, NextcloudClient, NextcloudError
 
+import initENV
 from add_context import enrich_chunks_with_context
 from chunking import chunk_document_with_llm_fallback
 from helpers import compute_next_review_at, ensure_db, utcnow_iso
@@ -141,43 +142,42 @@ def safe_log(conn, job_id, file_id, step, detail):
 
 
 # === Config (ENV) ===
-DB_PATH              = os.environ.get("DB_PATH", "DocumentDatabase/state.db")
-BRAIN_URL            = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
-BRAIN_API_KEY        = os.environ.get("BRAIN_API_KEY", "change-me")
-BRAIN_COLLECTION     = os.environ.get("BRAIN_COLLECTION", "documents")
-BRAIN_CHUNK_TOKENS   = int(os.environ.get("BRAIN_CHUNK_TOKENS", "400"))
-BRAIN_OVERLAP_TOKENS = int(os.environ.get("BRAIN_OVERLAP_TOKENS", "80"))
-BRAIN_REQUEST_TIMEOUT = float(os.environ.get("BRAIN_REQUEST_TIMEOUT", "120"))
-OLLAMA_HOST          = os.environ.get("OLLAMA_HOST", "http://192.168.177.130:11434")
-OLLAMA_MODEL         = os.environ.get("OLLAMA_MODEL", "mistral-small3.2:latest")
-OLLAMA_MODEL_RELEVANCE = os.environ.get("OLLAMA_MODEL_RELEVANCE", OLLAMA_MODEL)
-OLLAMA_MODEL_CHUNKING  = os.environ.get("OLLAMA_MODEL_CHUNKING", OLLAMA_MODEL)
-OLLAMA_MODEL_CONTEXT   = os.environ.get("OLLAMA_MODEL_CONTEXT", OLLAMA_MODEL)
-RELEVANCE_THRESHOLD  = float(os.environ.get("RELEVANCE_THRESHOLD", "0.55"))
-MIN_CHARS            = int(os.environ.get("MIN_CHARS", "200"))
-MAX_TEXT_CHARS       = int(os.environ.get("MAX_TEXT_CHARS", "100000"))
-MAX_CHARS            = int(os.environ.get("MAX_CHARS", "4000"))
-OVERLAP              = int(os.environ.get("OVERLAP", "400"))
-MAX_CHUNKS           = int(os.environ.get("MAX_CHUNKS", "200"))
-ENABLE_OCR           = os.environ.get("ENABLE_OCR", "0") == "1"
-DEBUG                = os.environ.get("DEBUG", "0") == "1"
-WORKER_DEBUG_LOGS    = os.environ.get("WORKER_DEBUG_LOGS", os.environ.get("DEBUG", "0")) == "1"
-LOCK_TIMEOUT_S       = int(os.environ.get("LOCK_TIMEOUT_S", "600"))
-IDLE_SLEEP_S         = float(os.environ.get("IDLE_SLEEP_S", "1.0"))
-PDFTOTEXT_TIMEOUT_S  = int(os.environ.get("PDFTOTEXT_TIMEOUT_S", "60"))
-PDF_OCR_MAX_PAGES    = int(os.environ.get("PDF_OCR_MAX_PAGES", "20"))
-PDF_OCR_DPI          = int(os.environ.get("PDF_OCR_DPI", "300"))
+DB_PATH = initENV.DB_PATH
+BRAIN_URL = initENV.BRAIN_URL
+BRAIN_API_KEY = initENV.BRAIN_API_KEY
+BRAIN_COLLECTION = initENV.BRAIN_COLLECTION
+BRAIN_CHUNK_TOKENS = initENV.BRAIN_CHUNK_TOKENS
+BRAIN_OVERLAP_TOKENS = initENV.BRAIN_OVERLAP_TOKENS
+BRAIN_REQUEST_TIMEOUT = initENV.BRAIN_REQUEST_TIMEOUT
+OLLAMA_HOST = initENV.OLLAMA_HOST
+OLLAMA_MODEL = initENV.OLLAMA_MODEL
+OLLAMA_MODEL_RELEVANCE = initENV.OLLAMA_MODEL_RELEVANCE
+OLLAMA_MODEL_CHUNKING = initENV.OLLAMA_MODEL_CHUNKING
+OLLAMA_MODEL_CONTEXT = initENV.OLLAMA_MODEL_CONTEXT
+RELEVANCE_THRESHOLD = initENV.RELEVANCE_THRESHOLD
+MIN_CHARS = initENV.MIN_CHARS
+MAX_TEXT_CHARS = initENV.MAX_TEXT_CHARS
+MAX_CHARS = initENV.MAX_CHARS
+OVERLAP = initENV.OVERLAP
+MAX_CHUNKS = initENV.MAX_CHUNKS
+ENABLE_OCR = initENV.ENABLE_OCR
+DEBUG = initENV.DEBUG
+LOCK_TIMEOUT_S = initENV.LOCK_TIMEOUT_S
+IDLE_SLEEP_S = initENV.IDLE_SLEEP_S
+PDFTOTEXT_TIMEOUT_S = initENV.PDFTOTEXT_TIMEOUT_S
+PDF_OCR_MAX_PAGES = initENV.PDF_OCR_MAX_PAGES
+PDF_OCR_DPI = initENV.PDF_OCR_DPI
 
-DOCLING_SERVE_URL     = os.environ.get("DOCLING_SERVE_URL", "http://192.168.177.130:5001/v1/convert/file")
-DOCLING_SERVE_TIMEOUT  = float(os.environ.get("DOCLING_SERVE_TIMEOUT", "300"))
-NEXTCLOUD_DOC_DIR      = os.environ.get("NEXTCLOUD_DOC_DIR", "/RAGdocuments")
-NEXTCLOUD_IMAGE_DIR    = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
-NEXTCLOUD_BASE_URL     = os.environ.get("NEXTCLOUD_BASE_URL", "http://192.168.177.133:8080").rstrip("/")
-NEXTCLOUD_USER         = os.environ.get("NEXTCLOUD_USER", "andreas")
-NEXTCLOUD_TOKEN        = os.environ.get("TOKEN") or os.environ.get("NEXTCLOUD_TOKEN", "")
+DOCLING_SERVE_URL = initENV.DOCLING_SERVE_URL
+DOCLING_SERVE_TIMEOUT = initENV.DOCLING_SERVE_TIMEOUT
+NEXTCLOUD_DOC_DIR = initENV.NEXTCLOUD_DOC_DIR
+NEXTCLOUD_IMAGE_DIR = initENV.NEXTCLOUD_IMAGE_DIR
+NEXTCLOUD_BASE_URL = initENV.NEXTCLOUD_BASE_URL
+NEXTCLOUD_USER = initENV.NEXTCLOUD_USER
+NEXTCLOUD_TOKEN = initENV.NEXTCLOUD_TOKEN
 
-DECISION_LOG_ENABLED  = os.environ.get("DECISION_LOG_ENABLED", "1") == "1"
-DECISION_LOG_MAX_PER_JOB = int(os.environ.get("DECISION_LOG_MAX_PER_JOB", "50"))
+DECISION_LOG_ENABLED = initENV.DECISION_LOG_ENABLED
+DECISION_LOG_MAX_PER_JOB = initENV.DECISION_LOG_MAX_PER_JOB
 
 WORKER_ID          = f"{os.uname().nodename}-pid{os.getpid()}"
 
@@ -189,7 +189,7 @@ def log(msg):
 
 
 def log_debug(msg):
-    if WORKER_DEBUG_LOGS:
+    if DEBUG:
         log(msg)
 
 
@@ -973,7 +973,7 @@ def brain_ingest_text(
     except Exception:
         pass
 
-    dbg_on = os.environ.get("DEBUG_BRAIN") == "1"
+    dbg_on = DEBUG
     dbg_dir = Path(os.environ.get("BRAIN_DEBUG_DIR", "/opt/ct109-ingest/brain-debug"))
     if dbg_on:
         try:
