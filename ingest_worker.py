@@ -384,10 +384,10 @@ def update_file_result(conn, file_id, result_obj):
     )
     conn.commit()
 
-
 def replace_file_images(conn, file_id: str, images: List[Dict[str, object]] | None):
     """Persist the latest image references for a file (idempotent)."""
     try:
+        log(f"[image_debug] file_id={file_id} images_count={len(images or [])}")
         ensure_db(conn)
         conn.execute("DELETE FROM images WHERE file_id=?", (file_id,))
         for img in images or []:
@@ -406,8 +406,7 @@ def replace_file_images(conn, file_id: str, images: List[Dict[str, object]] | No
         conn.commit()
     except Exception as exc:
         log(f"[image_record_failed] file_id={file_id} err={exc}")
-
-
+        traceback.print_exc()
 
 @dataclass
 class DoclingChunk:
