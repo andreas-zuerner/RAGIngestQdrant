@@ -474,7 +474,7 @@ class DoclingServeIngestor:
         images_payload = payload.get("images") or payload.get("media", {}).get("images") or []
         stored_images = self._store_images(images_payload, base_slug)
         if inline_images:
-            stored_images.extend(self._store_images(inline_images, base_slug))
+            stored_images.extend(inline_images)
 
         text_with_refs = self._inject_image_refs(text, stored_images)
         mime = payload.get("media_type") or payload.get("mime_type")
