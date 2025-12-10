@@ -94,7 +94,7 @@ NEXTCLOUD_DOC_DIR = os.environ.get("NEXTCLOUD_DOC_DIR", "/RAGdocuments")
 NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAG-images")
 NEXTCLOUD_BASE_URL = os.environ.get("NEXTCLOUD_BASE_URL", "http://192.168.177.133:8080").rstrip("/")
 NEXTCLOUD_USER = os.environ.get("NEXTCLOUD_USER", "andreas")
-NEXTCLOUD_TOKEN = os.environ.get("TOKEN") or os.environ.get("NEXTCLOUD_TOKEN", "")
+NEXTCLOUD_TOKEN = os.environ.get("NEXTCLOUD_TOKEN", "")
 
 DECISION_LOG_ENABLED = env_bool("DECISION_LOG_ENABLED", True)
 DECISION_LOG_MAX_PER_JOB = env_int("DECISION_LOG_MAX_PER_JOB", 50)

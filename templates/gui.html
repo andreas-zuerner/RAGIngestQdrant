@@ -16,8 +16,11 @@
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e0e0e0; }
     .flash { background: #eef5ff; border: 1px solid #b3d0ff; padding: 8px; margin-bottom: 6px; }
-    .env-pair { display: flex; gap: 8px; margin-bottom: 4px; }
-    .env-pair input { width: 50%; }
+    .env-table th:nth-child(1), .env-table td:nth-child(1) { width: 20%; }
+    .env-table th:nth-child(2), .env-table td:nth-child(2) { width: 20%; }
+    .env-table th:nth-child(3), .env-table td:nth-child(3) { width: 60%; }
+    .env-table input { width: 100%; box-sizing: border-box; }
+    .env-desc { color: #4a5568; font-size: 0.95em; }
     .grid-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
     .grid-prompts-log { display: grid; grid-template-columns: 0.4fr 0.6fr; gap: 16px; align-items: stretch; }
     @media (max-width: 900px) { .grid-prompts-log { grid-template-columns: 1fr; } }
@@ -121,14 +124,26 @@
   </section>
 
   <section>
-    <h2>Environment variables & prompts</h2>
+    <h2>Environment variables</h2>
     <form method="post" action="{{ url_for('update_env') }}">
-      {% for key, value in env_values.items() %}
-      <div class="env-pair">
-        <input type="text" readonly value="{{ key }}" />
-        <input type="text" name="env_{{ key }}" value="{{ value }}" />
-      </div>
-      {% endfor %}
+      <table class="env-table">
+        <thead>
+          <tr>
+            <th>Variable name</th>
+            <th>Current value</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for key, value in env_values.items() %}
+          <tr>
+            <td><input type="text" readonly value="{{ key }}" /></td>
+            <td><input type="text" name="env_{{ key }}" value="{{ value }}" /></td>
+            <td class="env-desc">{{ env_descriptions.get(key, '') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
       <button type="submit">Update .env.local</button>
     </form>
     <form method="post" action="{{ url_for('add_env_var') }}">

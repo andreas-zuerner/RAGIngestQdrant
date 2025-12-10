@@ -93,8 +93,8 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
   getrennt nach Dokumenten.
 * Die Nextcloud-Instanz ist über `http://192.168.177.133:8080` erreichbar. Der
   Standardbenutzer lautet `andreas`; der dazugehörige API-Token wird in
-  `.env.local` unter `TOKEN` (optional auch `NEXTCLOUD_TOKEN`) hinterlegt und
-  beim Starten des Scans automatisch als Umgebungsvariable geladen.
+  `.env.local` unter `NEXTCLOUD_TOKEN` hinterlegt und beim Starten des Scans
+  automatisch als Umgebungsvariable geladen.
 * Für die Textextraktion wird kein lokales `docling` mehr benötigt. Stattdessen
   spricht der Worker den bereitgestellten Webservice
   `docling-serve` unter `DOCLING_SERVE_URL` (Default
