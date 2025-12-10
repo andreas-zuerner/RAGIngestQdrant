@@ -217,6 +217,24 @@ class NextcloudClient:
         if not r.ok:
             raise NextcloudError(f"Upload failed for {remote_path}: {r.status_code} {r.text[:200]}")
 
+    def delete(self, remote_path: str) -> None:
+        """
+        Delete a file or directory in Nextcloud via WebDAV.
+        remote_path: e.g. "/RAG-images/foo.png"
+        """
+        url = self._url(remote_path)
+        self._log(f"delete {remote_path}")
+        r = self.session.delete(url)
+
+        # 204 No Content / 200 OK = success
+        # 404 Not Found = already gone → acceptable
+        if r.status_code in (200, 204, 404):
+            return
+
+        raise NextcloudError(
+            f"Delete failed for {remote_path}: {r.status_code} {r.text[:200]}"
+        )
+    
     def write_text(self, remote_path: str, text: str, encoding: str = "utf-8"):
         self.upload_bytes(remote_path, text.encode(encoding))
 
