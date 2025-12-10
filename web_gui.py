@@ -11,44 +11,30 @@ from urllib.parse import urljoin
 import requests
 from flask import Flask, flash, redirect, render_template, request, url_for
 
+import initENV
 from helpers import init_conn
 from nextcloud_client import NextcloudError, env_client
 from scan_scheduler import mark_deleted
 import prompt_store
 
-def load_env_file():
-    env_file = Path(__file__).parent / ".env.local"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            os.environ[key.strip()] = value.strip()
-
-load_env_file()
-
 app = Flask(__name__)
-app.secret_key = os.environ.get("WEB_GUI_SECRET", "dev-secret")
+app.secret_key = initENV.WEB_GUI_SECRET
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-LOG_PATH = Path(os.environ.get("SCHEDULER_LOG", PROJECT_ROOT / "logs/scan_scheduler.log"))
-DB_PATH = Path(os.environ.get("DB_PATH", PROJECT_ROOT / "DocumentDatabase/state.db"))
-ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
-EXAMPLE_ENV = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.example"))
-PROMPTS_FILE = prompt_store.prompt_file_path()
+PROJECT_ROOT = initENV.PROJECT_ROOT
+LOG_PATH = Path(initENV.SCHEDULER_LOG)
+DB_PATH = Path(initENV.DB_PATH)
+ENV_FILE = initENV.ENV_FILE
+EXAMPLE_ENV = initENV.ENV_EXAMPLE
 
-WEB_GUI_DEBUG = os.environ.get("WEB_GUI_DEBUG", "false").lower() in {"1", "true", "yes"}
+BRAIN_URL = initENV.BRAIN_URL
+BRAIN_COLLECTION = initENV.BRAIN_COLLECTION
+BRAIN_API_KEY = initENV.BRAIN_API_KEY
 
-BRAIN_URL = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
-BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
-BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY", "change-me")
-
-NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
+NEXTCLOUD_IMAGE_DIR = initENV.NEXTCLOUD_IMAGE_DIR
 
 
 def log_debug(msg: str):
-    if not WEB_GUI_DEBUG:
+    if not initENV.DEBUG:
         return
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -481,7 +467,6 @@ app.jinja_env.filters["format_payload"] = format_payload
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("WEB_GUI_PORT", "8088"))
-    host = os.environ.get("WEB_GUI_HOST", "0.0.0.0")
-    debug = os.environ.get("WEB_GUI_DEBUG", "false").lower() in {"1", "true", "yes"}
-    app.run(host=host, port=port, debug=debug)
+    port = initENV.WEB_GUI_PORT
+    host = initENV.WEB_GUI_HOST
+    app.run(host=host, port=port, debug=initENV.DEBUG)

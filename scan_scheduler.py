@@ -12,20 +12,18 @@ from typing import Set
 
 from nextcloud_client import env_client, NextcloudError
 
+import initENV
 from helpers import init_conn, compute_file_id, is_due
 
-DB_PATH = os.environ.get("DB_PATH", "DocumentDatabase/state.db")
-NEXTCLOUD_DOC_DIR = os.environ.get("NEXTCLOUD_DOC_DIR", "/RAGdocuments")
-NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAGimages")
-ROOT_DIRS = [p for p in os.environ.get("ROOT_DIRS", f"{NEXTCLOUD_DOC_DIR},{NEXTCLOUD_IMAGE_DIR}").split(",") if p]
-EXCLUDE_GLOBS = [g for g in os.environ.get("EXCLUDE_GLOBS", "").split(",") if g]
-FOLLOW_SYMLINKS = os.environ.get("FOLLOW_SYMLINKS", "0") == "1"
-MAX_JOBS_PER_PASS = int(os.environ.get("MAX_JOBS_PER_PASS", "5"))
-SLEEP_SECS = int(os.environ.get("SLEEP_SECS", "10"))
-WORKER_STOP_TIMEOUT = int(os.environ.get("WORKER_STOP_TIMEOUT", "20"))
-NEXTCLOUD_BASE_URL = os.environ.get("NEXTCLOUD_BASE_URL", "http://192.168.177.133:8080").rstrip("/")
-NEXTCLOUD_USER = os.environ.get("NEXTCLOUD_USER", "andreas")
-NEXTCLOUD_TOKEN = os.environ.get("TOKEN") or os.environ.get("NEXTCLOUD_TOKEN", "")
+DB_PATH = initENV.DB_PATH
+NEXTCLOUD_DOC_DIR = initENV.NEXTCLOUD_DOC_DIR
+ROOT_DIRS = initENV.ROOT_DIRS
+EXCLUDE_GLOBS = initENV.EXCLUDE_GLOBS
+MAX_JOBS_PER_PASS = initENV.MAX_JOBS_PER_PASS
+SLEEP_SECS = initENV.SLEEP_SECS
+WORKER_STOP_TIMEOUT = initENV.WORKER_STOP_TIMEOUT
+NEXTCLOUD_BASE_URL = initENV.NEXTCLOUD_BASE_URL
+NEXTCLOUD_USER = initENV.NEXTCLOUD_USER
 
 HIGH_PRIORITY_NEW = 100
 RETRY_PRIORITY_ERROR = 90
@@ -35,7 +33,7 @@ RETRY_PRIORITY_DEFAULT = 30
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 WORKER_SCRIPT = PROJECT_ROOT / "ingest_worker.py"
-PID_FILE = os.environ.get("SCAN_SCHEDULER_PID_FILE")
+PID_FILE = initENV.SCAN_SCHEDULER_PID_FILE
 
 
 def _timestamp() -> str:

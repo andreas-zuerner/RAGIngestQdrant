@@ -1,0 +1,113 @@
+import os
+from pathlib import Path
+from typing import Dict, Iterable
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
+ENV_EXAMPLE = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.example"))
+
+_loaded_env: Dict[str, str] | None = None
+
+def _load_env_file(path: Path) -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    if not path.exists():
+        return env
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env[key.strip()] = value.strip()
+    return env
+
+def load_env() -> Dict[str, str]:
+    global _loaded_env
+    if _loaded_env is not None:
+        return _loaded_env
+    _loaded_env = _load_env_file(ENV_FILE)
+    for key, value in _loaded_env.items():
+        os.environ.setdefault(key, value)
+    return _loaded_env
+
+def env_bool(key: str, default: bool = False) -> bool:
+    val = os.environ.get(key)
+    if val is None:
+        return default
+    return str(val).lower() in {"1", "true", "yes"}
+
+def env_int(key: str, default: int) -> int:
+    try:
+        return int(os.environ.get(key, str(default)))
+    except Exception:
+        return default
+
+def env_float(key: str, default: float) -> float:
+    try:
+        return float(os.environ.get(key, str(default)))
+    except Exception:
+        return default
+
+def env_list(key: str, default: Iterable[str] | None = None, *, sep: str = ",") -> list[str]:
+    value = os.environ.get(key)
+    if value is None:
+        return list(default or [])
+    return [item for item in value.split(sep) if item]
+
+
+# Initialize environment on import
+load_env()
+
+DEBUG = env_bool("DEBUG", False)
+
+DB_PATH = os.environ.get("DB_PATH", "DocumentDatabase/state.db")
+BRAIN_URL = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/")
+BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY", "change-me")
+BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
+BRAIN_CHUNK_TOKENS = env_int("BRAIN_CHUNK_TOKENS", 400)
+BRAIN_OVERLAP_TOKENS = env_int("BRAIN_OVERLAP_TOKENS", 80)
+BRAIN_REQUEST_TIMEOUT = env_float("BRAIN_REQUEST_TIMEOUT", 120)
+
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://192.168.177.130:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "mistral-small3.2:latest")
+OLLAMA_MODEL_RELEVANCE = os.environ.get("OLLAMA_MODEL_RELEVANCE", OLLAMA_MODEL)
+OLLAMA_MODEL_CHUNKING = os.environ.get("OLLAMA_MODEL_CHUNKING", OLLAMA_MODEL)
+OLLAMA_MODEL_CONTEXT = os.environ.get("OLLAMA_MODEL_CONTEXT", OLLAMA_MODEL)
+
+RELEVANCE_THRESHOLD = env_float("RELEVANCE_THRESHOLD", 0.55)
+MIN_CHARS = env_int("MIN_CHARS", 200)
+MAX_TEXT_CHARS = env_int("MAX_TEXT_CHARS", 100000)
+MAX_CHARS = env_int("MAX_CHARS", 4000)
+OVERLAP = env_int("OVERLAP", 400)
+MAX_CHUNKS = env_int("MAX_CHUNKS", 200)
+ENABLE_OCR = env_bool("ENABLE_OCR", False)
+
+LOCK_TIMEOUT_S = env_int("LOCK_TIMEOUT_S", 600)
+IDLE_SLEEP_S = env_float("IDLE_SLEEP_S", 1.0)
+PDFTOTEXT_TIMEOUT_S = env_int("PDFTOTEXT_TIMEOUT_S", 60)
+PDF_OCR_MAX_PAGES = env_int("PDF_OCR_MAX_PAGES", 20)
+PDF_OCR_DPI = env_int("PDF_OCR_DPI", 300)
+
+DOCLING_SERVE_URL = os.environ.get("DOCLING_SERVE_URL", "http://192.168.177.130:5001/v1/convert/file")
+DOCLING_SERVE_TIMEOUT = env_float("DOCLING_SERVE_TIMEOUT", 300)
+
+NEXTCLOUD_DOC_DIR = os.environ.get("NEXTCLOUD_DOC_DIR", "/RAGdocuments")
+NEXTCLOUD_IMAGE_DIR = os.environ.get("NEXTCLOUD_IMAGE_DIR", "/RAG-images")
+NEXTCLOUD_BASE_URL = os.environ.get("NEXTCLOUD_BASE_URL", "http://192.168.177.133:8080").rstrip("/")
+NEXTCLOUD_USER = os.environ.get("NEXTCLOUD_USER", "andreas")
+NEXTCLOUD_TOKEN = os.environ.get("TOKEN") or os.environ.get("NEXTCLOUD_TOKEN", "")
+
+DECISION_LOG_ENABLED = env_bool("DECISION_LOG_ENABLED", True)
+DECISION_LOG_MAX_PER_JOB = env_int("DECISION_LOG_MAX_PER_JOB", 50)
+
+WEB_GUI_SECRET = os.environ.get("WEB_GUI_SECRET", "dev-secret")
+WEB_GUI_PORT = env_int("WEB_GUI_PORT", 8088)
+WEB_GUI_HOST = os.environ.get("WEB_GUI_HOST", "0.0.0.0")
+SCHEDULER_LOG = os.environ.get("SCHEDULER_LOG", str(PROJECT_ROOT / "logs/scan_scheduler.log"))
+
+SCAN_SCHEDULER_PID_FILE = os.environ.get("SCAN_SCHEDULER_PID_FILE")
+ROOT_DIRS = env_list("ROOT_DIRS", default=[NEXTCLOUD_DOC_DIR, NEXTCLOUD_IMAGE_DIR])
+EXCLUDE_GLOBS = env_list("EXCLUDE_GLOBS", default=[])
+FOLLOW_SYMLINKS = env_bool("FOLLOW_SYMLINKS", False)
+MAX_JOBS_PER_PASS = env_int("MAX_JOBS_PER_PASS", 5)
+SLEEP_SECS = env_int("SLEEP_SECS", 10)
+WORKER_STOP_TIMEOUT = env_int("WORKER_STOP_TIMEOUT", 20)
