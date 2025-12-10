@@ -155,27 +155,39 @@
     let activeGroup = null;
     let activePointIndex = null;
 
+    const metaPayload = (item) => item?.payload?.meta || item?.payload?.metadata || {};
+
+    const baseName = (value) => {
+      if (!value || typeof value !== 'string') return '';
+      return value.split('/').filter(Boolean).pop() || value;
+    };
+
     const extractFileId = (item) =>
       item?.payload?.file_id ||
       item?.payload?.fileId ||
-      item?.payload?.metadata?.file_id ||
-      item?.payload?.metadata?.fileId ||
+      metaPayload(item)?.file_id ||
+      metaPayload(item)?.fileId ||
       'unknown';
 
     const extractDocumentName = (item) =>
       item?.payload?.document_name ||
       item?.payload?.documentName ||
-      item?.payload?.metadata?.document_name ||
-      item?.payload?.metadata?.documentName ||
+      metaPayload(item)?.document_name ||
+      metaPayload(item)?.documentName ||
+      baseName(item?.payload?.file_name) ||
+      baseName(metaPayload(item)?.file_name) ||
+      baseName(metaPayload(item)?.filename) ||
+      baseName(item?.payload?.path) ||
+      baseName(metaPayload(item)?.path) ||
       '';
 
     const extractTempName = (item) =>
       item?.payload?.temp_name ||
       item?.payload?.tempName ||
       item?.payload?.slug ||
-      item?.payload?.metadata?.temp_name ||
-      item?.payload?.metadata?.tempName ||
-      item?.payload?.metadata?.slug ||
+      metaPayload(item)?.temp_name ||
+      metaPayload(item)?.tempName ||
+      metaPayload(item)?.slug ||
       '';
 
     function buildGroupedResults(results) {
