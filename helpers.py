@@ -12,7 +12,7 @@ def utcnow_iso():
 def ensure_db(conn: sqlite3.Connection):
     """Create core tables and indexes if missing (idempotent)."""
 
-    def column_exists(table: str, column: str, conn: sqlite3.Connection) -> bool:
+    def column_exists(table: str, column: str) -> bool:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
         for row in rows:
             # row kann tuple, sqlite3.Row oder dict sein
@@ -25,7 +25,6 @@ def ensure_db(conn: sqlite3.Connection):
             if name == column:
                 return True
         return False
-
 
     conn.executescript(
         """
@@ -113,6 +112,7 @@ def ensure_db(conn: sqlite3.Connection):
         """
     )
     conn.commit()
+
 
 def compute_file_id(path: str):
     # stable ID: sha1 of absolute path (lowercased)
