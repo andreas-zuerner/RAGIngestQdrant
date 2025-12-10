@@ -112,6 +112,32 @@ def persist_env_file(env: Dict[str, str]):
     ENV_FILE.write_text(content, encoding="utf-8")
 
 
+def load_env_descriptions() -> Dict[str, str]:
+    descriptions: Dict[str, str] = {}
+    if not EXAMPLE_ENV.exists():
+        return descriptions
+
+    pending_comments: List[str] = []
+    for line in EXAMPLE_ENV.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            pending_comments = []
+            continue
+        if stripped.startswith("#"):
+            comment = stripped.lstrip("#").strip()
+            if comment:
+                pending_comments.append(comment)
+            continue
+        if "=" not in line:
+            pending_comments = []
+            continue
+        key = line.split("=", 1)[0].strip()
+        descriptions[key] = " ".join(pending_comments).strip()
+        pending_comments = []
+
+    return descriptions
+
+
 def current_env() -> Dict[str, str]:
     merged = dict(os.environ)
     merged.update(load_env_file())
@@ -317,6 +343,7 @@ def render_gui(**extra):
     base = dict(
         log_preview=read_log(),
         env_values=load_env_file(),
+        env_descriptions=load_env_descriptions(),
         current_env=current_env(),
         qdrant_collection=BRAIN_COLLECTION,
         prompts=read_prompts(),

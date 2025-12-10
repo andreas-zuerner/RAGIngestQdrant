@@ -246,7 +246,7 @@ class NextcloudClient:
 def env_client() -> NextcloudClient:
     base_url = os.environ.get("NEXTCLOUD_BASE_URL", "http://192.168.177.133:8080").rstrip("/")
     user = os.environ.get("NEXTCLOUD_USER", "andreas")
-    token = os.environ.get("TOKEN") or os.environ.get("NEXTCLOUD_TOKEN", "")
+    token = os.environ.get("NEXTCLOUD_TOKEN", "")
     client = NextcloudClient(base_url, user, token)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(
