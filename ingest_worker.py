@@ -1330,6 +1330,7 @@ def process_one(conn, job_id, file_id):
                 "source": "RAGIngestQdrant",
                 "path": original_path,
                 "document_name": posixpath.basename(original_path.rstrip("/")) or p.name,
+                "temp_name": extraction.slug,
                 "chunk_index": chunk.meta.get("chunk_index", idx),
                 "chunks_total": len(chunks),
                 "job_id": job_id,
