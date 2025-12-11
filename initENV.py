@@ -104,7 +104,6 @@ WEB_GUI_HOST = os.environ.get("WEB_GUI_HOST", "0.0.0.0")
 SCHEDULER_LOG = os.environ.get("SCHEDULER_LOG", str(PROJECT_ROOT / "logs/scan_scheduler.log"))
 
 SCAN_SCHEDULER_PID_FILE = os.environ.get("SCAN_SCHEDULER_PID_FILE")
-ROOT_DIRS = env_list("ROOT_DIRS", default=[NEXTCLOUD_DOC_DIR, NEXTCLOUD_IMAGE_DIR])
 EXCLUDE_GLOBS = env_list("EXCLUDE_GLOBS", default=[])
 FOLLOW_SYMLINKS = env_bool("FOLLOW_SYMLINKS", False)
 MAX_JOBS_PER_PASS = env_int("MAX_JOBS_PER_PASS", 5)

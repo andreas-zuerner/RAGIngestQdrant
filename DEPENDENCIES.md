@@ -88,7 +88,7 @@ adjust it for your environment:
 
 ```bash
 cp .env.local.example .env.local
-# anschließend DB_PATH, ROOT_DIRS, BRAIN_API_KEY usw. konfigurieren
+# anschließend DB_PATH, BRAIN_API_KEY usw. konfigurieren
 ```
 
 ## Running the services

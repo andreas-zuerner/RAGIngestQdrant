@@ -17,13 +17,13 @@ from helpers import init_conn, compute_file_id, is_due
 
 DB_PATH = initENV.DB_PATH
 NEXTCLOUD_DOC_DIR = initENV.NEXTCLOUD_DOC_DIR
-ROOT_DIRS = initENV.ROOT_DIRS
 EXCLUDE_GLOBS = initENV.EXCLUDE_GLOBS
 MAX_JOBS_PER_PASS = initENV.MAX_JOBS_PER_PASS
 SLEEP_SECS = initENV.SLEEP_SECS
 WORKER_STOP_TIMEOUT = initENV.WORKER_STOP_TIMEOUT
 NEXTCLOUD_BASE_URL = initENV.NEXTCLOUD_BASE_URL
 NEXTCLOUD_USER = initENV.NEXTCLOUD_USER
+SCAN_ROOTS = (NEXTCLOUD_DOC_DIR, initENV.NEXTCLOUD_IMAGE_DIR)
 
 HIGH_PRIORITY_NEW = 100
 RETRY_PRIORITY_ERROR = 90
@@ -271,7 +271,7 @@ def sync_and_enqueue(conn):
         log_scan(f"failed to init Nextcloud client: {exc}")
         return added, enq, 0
 
-    for root in ROOT_DIRS:
+    for root in SCAN_ROOTS:
         log_scan(
             f"walking Nextcloud root={root} base_url={NEXTCLOUD_BASE_URL} user={NEXTCLOUD_USER}"
         )
@@ -385,7 +385,7 @@ def main():
             worker_proc = None
 
     log_scan(
-        f"DB={DB_PATH} roots={ROOT_DIRS} sleep={SLEEP_SECS}s max_jobs={MAX_JOBS_PER_PASS}"
+        f"DB={DB_PATH} roots={SCAN_ROOTS} sleep={SLEEP_SECS}s max_jobs={MAX_JOBS_PER_PASS}"
     )
     write_pid_file()
     try:
