@@ -6,6 +6,7 @@ import json
 import mimetypes
 import re
 import os
+import shutil
 import posixpath
 import sqlite3
 import subprocess
@@ -34,7 +35,7 @@ class DoclingUnavailableError(RuntimeError):
 
 
 TEXT_FALLBACK_EXTENSIONS = {".txt", ".text"}
-ODF_FALLBACK_EXTENSIONS = {".odt", ".ods", ".odp", ".odg", ".odf", ".odm"}
+CONVERT_BEFORE_DOCLING = {".xls", ".doc", ".odf", ".odp", ".odt", ".odg", ".ods", ".odm"}
 
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
@@ -62,6 +63,68 @@ def _optional_import(name: str):
 def _dbg_write(target: Path, content: str):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content or "", encoding="utf-8")
+
+
+def convert_for_docling(file_path: Path) -> Tuple[Path, Optional[Path]]:
+    """
+    Convert office-style documents to PDF before sending them to docling-serve.
+
+    Returns a tuple of (path_to_use, temp_dir_to_cleanup). When conversion fails
+    or is not required, the original path is returned and the cleanup path is None.
+    """
+
+    ext = file_path.suffix.lower()
+    if ext not in CONVERT_BEFORE_DOCLING:
+        return file_path, None
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice is None:
+        log(f"[convert_skip_no_soffice] path={file_path} ext={ext}")
+        return file_path, None
+
+    temp_dir: Optional[Path] = None
+    try:
+        temp_dir = Path(tempfile.mkdtemp(prefix="docling-convert-"))
+        cmd = [
+            soffice,
+            "--headless",
+            "--nologo",
+            "--nolockcheck",
+            "--nodefault",
+            "--norestore",
+            "--invisible",
+            "--convert-to",
+            "pdf:writer_pdf_Export",
+            "--outdir",
+            str(temp_dir),
+            str(file_path),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0:
+            log(
+                f"[convert_failed] source={file_path} rc={proc.returncode} "
+                f"stdout={proc.stdout.strip()!r} stderr={proc.stderr.strip()!r}"
+            )
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return file_path, None
+
+        candidate = temp_dir / f"{file_path.stem}.pdf"
+        if not candidate.exists():
+            pdfs = list(temp_dir.glob("*.pdf"))
+            candidate = pdfs[0] if pdfs else candidate
+
+        if candidate.exists():
+            log(f"[convert_success] source={file_path} target={candidate}")
+            return candidate, temp_dir
+
+        log(f"[convert_missing_output] source={file_path} dir={temp_dir}")
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return file_path, None
+    except Exception as exc:
+        log(f"[convert_error] source={file_path} err={exc}")
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        return file_path, None
 
 
 def pdftotext_extract(file_path: Path, *, timeout: Optional[int] = None) -> str:
@@ -702,6 +765,31 @@ class DoclingServeIngestor:
                 for idx, chunk in enumerate(chunk_texts, start=1):
                     chunk_lines.append(f"### Chunk {idx}\n{chunk}\n")
                 (doc_dir / "chunks.txt").write_text("\n".join(chunk_lines), encoding="utf-8")
+
+            if images:
+                image_dir = ensure_dir(doc_dir / "images")
+                manifest = []
+                for img in images:
+                    label = img.get("label") or img.get("name") or "image"
+                    reference = img.get("reference") or img.get("path")
+                    manifest.append(
+                        {
+                            "label": label,
+                            "reference": reference,
+                            "mime": img.get("mime"),
+                            "uploaded": bool(img.get("uploaded")),
+                        }
+                    )
+                    data = img.get("data")
+                    if data:
+                        try:
+                            target = image_dir / str(label)
+                            target.write_bytes(data if isinstance(data, (bytes, bytearray)) else bytes(data))
+                        except Exception:
+                            continue
+                (doc_dir / "images.json").write_text(
+                    json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
         except Exception as exc:
             log(f"[docling_debug_write_failed] slug={slug} err={exc}")
 
@@ -1045,6 +1133,7 @@ def process_one(conn, job_id, file_id):
     original_path = str(path)
     p = Path(path)
     temp_file: Path | None = None
+    conversion_dir: Path | None = None
     size_hint = _get(row, "size")
     log(
         f"[process_path] job_id={job_id} file_id={file_id} path={p} size={size_hint} priority={_get(row, 'priority')}"
@@ -1091,21 +1180,44 @@ def process_one(conn, job_id, file_id):
         finish_error(conn, job_id, file_id, "error_missing_file", "file missing on disk")
         return
 
+    debug_dir: Optional[Path] = None
+    if DEBUG:
+        try:
+            ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            debug_dir = ensure_dir(Path("./debug") / f"{ts}_{slugify(p.stem)}")
+        except Exception:
+            debug_dir = None
+
+    docling_path = p
     try:
-        size = p.stat().st_size
-        log(f"[extract_start] job_id={job_id} file_id={file_id} path={p} size={size}")
+        docling_path, conversion_dir = convert_for_docling(p)
+    except Exception as exc:
+        docling_path = p
+        log(f"[convert_for_docling_error] source={p} err={exc}")
+
+    try:
+        size = docling_path.stat().st_size
+        log(
+            f"[extract_start] job_id={job_id} file_id={file_id} path={docling_path} "
+            f"size={size} original={p}"
+        )
         ingestor = get_docling_ingestor()
 
         extraction: Optional[DoclingExtraction] = None
         docling_error: Optional[Exception] = None
         docling_source = "docling-serve"
         try:
-            extraction = ingestor.extract(p, upload_images=False, debug=DEBUG)
+            extraction = ingestor.extract(
+                docling_path,
+                upload_images=False,
+                debug=DEBUG,
+                debug_dir=debug_dir / "docling" if debug_dir else None,
+            )
         except Exception as e:
             docling_error = e
-            log(f"[extract_error] job_id={job_id} file_id={file_id} path={p} err={e}")
+            log(f"[extract_error] job_id={job_id} file_id={file_id} path={docling_path} err={e}")
 
-        if extraction is None and p.suffix.lower() == ".pdf":
+        if extraction is None and docling_path.suffix.lower() == ".pdf":
             log(
                 f"[extract_fallback] job_id={job_id} file_id={file_id} using legacy PDF fallback due to {docling_error}"
             )
@@ -1272,11 +1384,12 @@ def process_one(conn, job_id, file_id):
             pass
 
         if DEBUG:
+            debug_dump_dir = debug_dir / "docling" if debug_dir else Path("logs") / "docling"
             ingestor._write_debug_dump(
                 extraction.slug,
                 extraction.text,
                 extraction.images,
-                Path("logs") / "docling",
+                debug_dump_dir,
                 chunk_texts=chunk_texts,
             )
 
@@ -1401,6 +1514,11 @@ def process_one(conn, job_id, file_id):
         if temp_file and temp_file.exists():
             try:
                 temp_file.unlink()
+            except Exception:
+                pass
+        if conversion_dir and conversion_dir.exists():
+            try:
+                shutil.rmtree(conversion_dir, ignore_errors=True)
             except Exception:
                 pass
 
