@@ -889,7 +889,15 @@ def get_docling_ingestor() -> DoclingServeIngestor:
         )
     return _DOCLING_INGESTOR
 
-def ai_score_text(ollama_host, model, text, timeout=600, debug=False, dbg_root: Path=Path("./debug")):
+def ai_score_text(
+    ollama_host,
+    model,
+    text,
+    timeout=600,
+    debug=False,
+    dbg_root: Path = Path("./debug"),
+    dbg_dir: Optional[Path] = None,
+):
     """
     Bewertet Text via Ollama /api/generate und liefert ein Dict:
       {"is_relevant": bool, "confidence": float, "topics": [str], "summary": str, "visibility": str}
@@ -907,17 +915,18 @@ def ai_score_text(ollama_host, model, text, timeout=600, debug=False, dbg_root: 
     user_prompt = f"{sys_prompt}\n---\nCONTENT START\n{content_sample}\nCONTENT END\n"
 
     # --- Debug-Verzeichnis vorbereiten (optional) ---
-    dbg_dir = None
+    dbg_active_dir: Optional[Path] = None
     if debug:
         ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        target_dir = dbg_dir or (dbg_root / f"{ts}_{slugify((content_sample[:80] or 'doc'))}")
         try:
-            dbg_dir = ensure_dir(dbg_root / f"{ts}_{slugify((content_sample[:80] or 'doc'))}")
-            _dbg_write(dbg_dir / "_entered.txt", utcnow_iso())
-            _dbg_write(dbg_dir / "lengths.txt", f"content_len={len(content_sample)}")
-            _dbg_write(dbg_dir / "prompt.txt", user_prompt)
-            _dbg_write(dbg_dir / "content_head.txt", content_sample[:2000])
+            dbg_active_dir = ensure_dir(target_dir)
+            _dbg_write(dbg_active_dir / "_entered.txt", utcnow_iso())
+            _dbg_write(dbg_active_dir / "lengths.txt", f"content_len={len(content_sample)}")
+            _dbg_write(dbg_active_dir / "prompt.txt", user_prompt)
+            _dbg_write(dbg_active_dir / "content_head.txt", content_sample[:2000])
         except Exception:
-            dbg_dir = None  # Debug nicht kritisch
+            dbg_active_dir = None  # Debug nicht kritisch
 
     # --- HTTP-Request an Ollama ---
     url = f"{ollama_host.rstrip('/')}/api/generate"
@@ -939,10 +948,10 @@ def ai_score_text(ollama_host, model, text, timeout=600, debug=False, dbg_root: 
         r = requests.post(url, json=payload, timeout=timeout)
         elapsed = time.time() - t0
 
-        if debug and dbg_dir:
+        if debug and dbg_active_dir:
             try:
-                _dbg_write(dbg_dir / "http_status.txt", f"{r.status_code}")
-                _dbg_write(dbg_dir / "latency_ms.txt", f"{int(elapsed*1000)}")
+                _dbg_write(dbg_active_dir / "http_status.txt", f"{r.status_code}")
+                _dbg_write(dbg_active_dir / "latency_ms.txt", f"{int(elapsed*1000)}")
             except Exception:
                 pass
 
@@ -950,9 +959,9 @@ def ai_score_text(ollama_host, model, text, timeout=600, debug=False, dbg_root: 
         resp = r.json()
         raw = (resp.get("response") or "").strip()
 
-        if debug and dbg_dir:
+        if debug and dbg_active_dir:
             try:
-                _dbg_write(dbg_dir / "raw_response.json", raw)
+                _dbg_write(dbg_active_dir / "raw_response.json", raw)
             except Exception:
                 pass
 
@@ -961,8 +970,8 @@ def ai_score_text(ollama_host, model, text, timeout=600, debug=False, dbg_root: 
         try:
             ai = json.loads(raw) if raw else {}
         except Exception as e:
-            if debug and dbg_dir:
-                _dbg_write(dbg_dir / "json_error.txt", str(e))
+            if debug and dbg_active_dir:
+                _dbg_write(dbg_active_dir / "json_error.txt", str(e))
             ai = {}
 
         # --- Felder robust extrahieren ---
@@ -980,9 +989,9 @@ def ai_score_text(ollama_host, model, text, timeout=600, debug=False, dbg_root: 
             "visibility": ai.get("visibility") or "private",
         }
 
-        if debug and dbg_dir:
+        if debug and dbg_active_dir:
             try:
-                _dbg_write(dbg_dir / "parsed.json", json.dumps(result, indent=2))
+                _dbg_write(dbg_active_dir / "parsed.json", json.dumps(result, indent=2))
                 # Optional: Mini-Erklärung (nicht JSON), nur für Dev-Debug
                 explain_prompt = (
                     "In one short sentence (max 25 words), explain why the document is or is not relevant to the user's knowledge base. "
@@ -999,16 +1008,16 @@ def ai_score_text(ollama_host, model, text, timeout=600, debug=False, dbg_root: 
                     timeout=30,
                 )
                 if r2.ok:
-                    _dbg_write(dbg_dir / "why.txt", (r2.json().get("response") or "").strip())
+                    _dbg_write(dbg_active_dir / "why.txt", (r2.json().get("response") or "").strip())
             except Exception:
                 pass
 
         return result
 
     except Exception as e:
-        if debug and dbg_dir:
+        if debug and dbg_active_dir:
             try:
-                _dbg_write(dbg_dir / "fatal_error.txt", str(e))
+                _dbg_write(dbg_active_dir / "fatal_error.txt", str(e))
             except Exception:
                 pass
         # Fallback-Ergebnis bei Fehlern
@@ -1032,6 +1041,9 @@ def brain_ingest_text(
     overlap_tokens: int | None = None,
     collection: str | None = None,
     timeout: float = 30,
+    debug: bool = False,
+    dbg_dir: Optional[Path] = None,
+    dbg_root: Path = Path("./debug"),
 ):
     from datetime import datetime
     from pathlib import Path
@@ -1060,42 +1072,50 @@ def brain_ingest_text(
     except Exception:
         pass
 
-    dbg_on = DEBUG
-    dbg_dir = Path(os.environ.get("BRAIN_DEBUG_DIR", "/opt/ct109-ingest/brain-debug"))
+    dbg_on = debug
+    dbg_active_dir: Optional[Path] = None
+    dbg_base: Optional[Path] = None
     if dbg_on:
+        ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        target_dir = dbg_dir or (dbg_root / f"{ts}_{slugify(((text or '')[:80] or 'doc'))}")
         try:
-            dbg_dir.mkdir(parents=True, exist_ok=True)
+            dbg_active_dir = ensure_dir(target_dir)
+            chunk_label = meta.get("chunk_index")
+            chunk_suffix = f"chunk{chunk_label}" if chunk_label is not None else f"chunk-{os.getpid()}"
+            dbg_base = dbg_active_dir / chunk_suffix
+            req_dump = {
+                "url": url,
+                "headers": {"x-api-key": "***redacted***", "content-type": "application/json"},
+                "meta": meta,
+                "text_len": len(text),
+                "text_head": text[:1000],
+            }
+            (dbg_base.with_suffix(".request.json")).write_text(
+                json.dumps(req_dump, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         except Exception:
             dbg_on = False
 
-    if dbg_on:
-        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-        base = dbg_dir / f"{ts}-{os.getpid()}"
-        req_dump = {
-            "url": url,
-            "headers": {"x-api-key": "***redacted***", "content-type": "application/json"},
-            "meta": meta,
-            "text_len": len(text),
-            "text_head": text[:1000],
-        }
-        (base.with_suffix(".request.json")).write_text(json.dumps(req_dump, ensure_ascii=False, indent=2), encoding="utf-8")
-
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=timeout)
-        if dbg_on:
+        if dbg_on and dbg_base:
             resp_dump = {"status": r.status_code, "ok": r.ok, "body_head": r.text[:2000]}
-            (base.with_suffix(".response.json")).write_text(json.dumps(resp_dump, ensure_ascii=False, indent=2), encoding="utf-8")
+            (dbg_base.with_suffix(".response.json")).write_text(
+                json.dumps(resp_dump, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        if dbg_on:
+        if dbg_on and dbg_base:
             from traceback import format_exc
-            (base.with_suffix(".error.json")).write_text(format_exc(), encoding="utf-8")
+            (dbg_base.with_suffix(".error.json")).write_text(format_exc(), encoding="utf-8")
         raise
     except Exception as e:
-        if dbg_on:
+        if dbg_on and dbg_base:
             err_dump = {"error": repr(e)}
-            (base.with_suffix(".error.json")).write_text(json.dumps(err_dump, ensure_ascii=False, indent=2), encoding="utf-8")
+            (dbg_base.with_suffix(".error.json")).write_text(
+                json.dumps(err_dump, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         raise
 
 
@@ -1275,6 +1295,15 @@ def process_one(conn, job_id, file_id):
             clean = clean[:MAX_TEXT_CHARS]
             log_decision(conn, job_id, file_id, "threshold", f"cap: truncated to {MAX_TEXT_CHARS} chars")
 
+        doc_dbg_dir: Optional[Path] = None
+        if DEBUG:
+            dbg_root = Path("./debug")
+            dbg_sample = clean[:80]
+            try:
+                doc_dbg_dir = ensure_dir(dbg_root / f"{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}_{slugify((dbg_sample or 'doc'))}")
+            except Exception:
+                doc_dbg_dir = None
+
         try:
             if not OLLAMA_HOST:
                 safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
@@ -1290,6 +1319,7 @@ def process_one(conn, job_id, file_id):
                 timeout=600,
                 debug=DEBUG,
                 dbg_root=Path("./debug"),
+                dbg_dir=doc_dbg_dir,
             )
             is_rel = bool(ai.get("is_relevant"))
             conf   = float(ai.get("confidence", 0.0))
@@ -1476,6 +1506,9 @@ def process_one(conn, job_id, file_id):
                     meta=chunk_meta,
                     collection=BRAIN_COLLECTION,
                     timeout=BRAIN_REQUEST_TIMEOUT,
+                    debug=DEBUG,
+                    dbg_dir=doc_dbg_dir,
+                    dbg_root=Path("./debug"),
                 )
                 if ok:
                     safe_log(conn, job_id, file_id, "brain_ok", f"chunk={idx}")
