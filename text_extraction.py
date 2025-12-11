@@ -234,7 +234,7 @@ def log(msg: str):
     print(line, flush=True)
     if initENV.DEBUG and _LOGGER is not None:
         try:
-            _LOGGER.info(line)
+            _LOGGER.info(f"[{WORKER_ID}] {msg}")
         except Exception:
             pass
 
@@ -469,12 +469,21 @@ class DoclingServeIngestor:
             raise RuntimeError("docling-serve async response did not include a poll URL")
 
         deadline = start + self.async_timeout
+        attempts = 0
+        last_error: Exception | None = None
         while time.time() < deadline:
+            attempts += 1
             try:
                 poll_response = requests.get(poll_url, timeout=DOCLING_SERVE_TIMEOUT)
                 poll_response.raise_for_status()
             except Exception as exc:
-                raise DoclingUnavailableError(f"docling-serve async poll failed: {exc}") from exc
+                last_error = exc
+                log_debug(
+                    f"[docling_async_poll_retry] url={poll_url} attempts={attempts} "
+                    f"err={exc}"
+                )
+                time.sleep(self.poll_interval)
+                continue
 
             try:
                 poll_data = poll_response.json()
@@ -493,8 +502,9 @@ class DoclingServeIngestor:
 
             time.sleep(self.poll_interval)
 
+        suffix = f"; last_error={last_error}" if last_error else ""
         raise DoclingUnavailableError(
-            f"docling-serve async timed out after {self.async_timeout}s while polling {poll_url}"
+            f"docling-serve async timed out after {self.async_timeout}s while polling {poll_url}{suffix}"
         )
 
     def _maybe_extract_payload(self, payload: Dict[str, object]) -> Optional[Dict[str, object]]:
