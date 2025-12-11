@@ -1,13 +1,8 @@
 
 #!/usr/bin/env python3
-import base64
-import importlib
 import json
 import logging
-import mimetypes
-import re
 import os
-import shutil
 import posixpath
 import sqlite3
 import subprocess
@@ -15,8 +10,6 @@ import sys
 import tempfile
 import time
 import traceback
-import unicodedata
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -29,164 +22,16 @@ from add_context import enrich_chunks_with_context
 from chunking import chunk_document_with_llm_fallback
 from helpers import compute_next_review_at, ensure_db, utcnow_iso
 from prompt_store import get_prompt
+from text_extraction import (
+    DoclingChunk,
+    ExtractionFailed,
+    ExtractionOutcome,
+    ensure_dir,
+    extract_document,
+    slugify,
+)
 
 
-class DoclingUnavailableError(RuntimeError):
-    """Raised when docling is missing at runtime."""
-
-
-TEXT_FALLBACK_EXTENSIONS = {".txt", ".text"}
-CONVERT_BEFORE_DOCLING = {".xls", ".doc", ".odf", ".odp", ".odt", ".odg", ".ods", ".odm"}
-
-def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def slugify(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", value or "")
-    cleaned = [c for c in normalized if c.isalnum() or c in {"-", "_"}]
-    slug = "".join(cleaned).strip("-_").lower()
-    return slug or "doc"
-
-
-def _optional_import(name: str):
-    spec = importlib.util.find_spec(name)
-    if spec is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
-    if module is None or spec.loader is None:
-        return None
-    spec.loader.exec_module(module)
-    return module
-
-
-def _dbg_write(target: Path, content: str):
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content or "", encoding="utf-8")
-
-
-def convert_for_docling(file_path: Path) -> Tuple[Path, Optional[Path]]:
-    """
-    Convert office-style documents to PDF before sending them to docling-serve.
-
-    Returns a tuple of (path_to_use, temp_dir_to_cleanup). When conversion fails
-    or is not required, the original path is returned and the cleanup path is None.
-    """
-
-    ext = file_path.suffix.lower()
-    if ext not in CONVERT_BEFORE_DOCLING:
-        return file_path, None
-
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
-    if soffice is None:
-        log(f"[convert_skip_no_soffice] path={file_path} ext={ext}")
-        return file_path, None
-
-    temp_dir: Optional[Path] = None
-    try:
-        temp_dir = Path(tempfile.mkdtemp(prefix="docling-convert-"))
-        cmd = [
-            soffice,
-            "--headless",
-            "--nologo",
-            "--nolockcheck",
-            "--nodefault",
-            "--norestore",
-            "--invisible",
-            "--convert-to",
-            "pdf:writer_pdf_Export",
-            "--outdir",
-            str(temp_dir),
-            str(file_path),
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        if proc.returncode != 0:
-            log(
-                f"[convert_failed] source={file_path} rc={proc.returncode} "
-                f"stdout={proc.stdout.strip()!r} stderr={proc.stderr.strip()!r}"
-            )
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return file_path, None
-
-        candidate = temp_dir / f"{file_path.stem}.pdf"
-        if not candidate.exists():
-            pdfs = list(temp_dir.glob("*.pdf"))
-            candidate = pdfs[0] if pdfs else candidate
-
-        if candidate.exists():
-            log(f"[convert_success] source={file_path} target={candidate}")
-            return candidate, temp_dir
-
-        log(f"[convert_missing_output] source={file_path} dir={temp_dir}")
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        return file_path, None
-    except Exception as exc:
-        log(f"[convert_error] source={file_path} err={exc}")
-        if temp_dir:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        return file_path, None
-
-
-def pdftotext_extract(file_path: Path, *, timeout: Optional[int] = None) -> str:
-    if not file_path.exists():
-        return ""
-    effective_timeout = PDFTOTEXT_TIMEOUT_S if timeout is None else timeout
-    try:
-        proc = subprocess.run(
-            ["pdftotext", "-enc", "UTF-8", str(file_path), "-"],
-            capture_output=True,
-            text=True,
-            timeout=effective_timeout,
-            check=False,
-        )
-    except FileNotFoundError:
-        return ""
-    except subprocess.TimeoutExpired:
-        return ""
-    if proc.returncode != 0:
-        return ""
-    return proc.stdout or ""
-
-
-def ocr_pdf_with_tesseract(
-    file_path: Path, *, dpi: Optional[int] = None, max_pages: Optional[int] = None
-) -> str:
-    pdf2image = _optional_import("pdf2image")
-    pytesseract = _optional_import("pytesseract")
-    if pdf2image is None or pytesseract is None:
-        return ""
-    effective_dpi = PDF_OCR_DPI if dpi is None else dpi
-    max_pages = PDF_OCR_MAX_PAGES if max_pages is None else max_pages
-    last_page = max_pages if max_pages and max_pages > 0 else None
-    try:
-        images = pdf2image.convert_from_path(
-            str(file_path), dpi=effective_dpi, last_page=last_page
-        )
-    except Exception:
-        return ""
-    texts: List[str] = []
-    for img in images:
-        try:
-            text = pytesseract.image_to_string(img)
-        except Exception:
-            continue
-        if text and text.strip():
-            texts.append(text.strip())
-    return "\n\n".join(texts)
-
-
-def legacy_pdf_fallback_text(file_path: Path) -> str:
-    text_candidates: List[str] = []
-    base_text = (pdftotext_extract(file_path) or "").strip()
-    if base_text:
-        text_candidates.append(base_text)
-    if ENABLE_OCR:
-        ocr_text = (ocr_pdf_with_tesseract(file_path) or "").strip()
-        if ocr_text:
-            text_candidates.append(ocr_text)
-    combined = "\n\n".join(text_candidates).strip()
-    return combined
 
 # --- safe logger to avoid crashes during instrumentation ---
 _log_counters = {}  # (job_id) -> count
@@ -491,440 +336,6 @@ def replace_file_images(conn, file_id: str, images: List[Dict[str, object]] | No
         log(f"[image_record_failed] file_id={file_id} err={exc}")
         traceback.print_exc()
 
-
-def sanitize_images(images: List[Dict[str, object]] | None) -> List[Dict[str, object]]:
-    sanitized: List[Dict[str, object]] = []
-    for img in images or []:
-        if not isinstance(img, dict):
-            continue
-        clean = {k: v for k, v in img.items() if k not in {"data"}}
-        sanitized.append(clean)
-    return sanitized
-
-@dataclass
-class DoclingChunk:
-    text: str
-    meta: Dict[str, object]
-
-
-@dataclass
-class DoclingExtraction:
-    text: str
-    mime_type: Optional[str]
-    chunks: List[DoclingChunk]
-    images: List[Dict[str, object]]
-    slug: str
-
-
-class DoclingServeIngestor:
-    """Interact with docling-serve and persist extracted images."""
-
-    def __init__(
-        self,
-        *,
-        chunk_size: int,
-        chunk_overlap: int,
-        max_chunks: int,
-        service_url: str,
-        image_dir: Path,
-        nextcloud_client: NextcloudClient | None = None,
-        remote_image_dir: str | None = None,
-    ):
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.max_chunks = max_chunks
-        self.service_url = service_url.rstrip("/")
-        self.image_dir = ensure_dir(Path(image_dir)) if nextcloud_client is None else Path(image_dir)
-        self.nextcloud_client = nextcloud_client
-        self.remote_image_dir = remote_image_dir or str(image_dir)
-
-    def extract(
-        self,
-        file_path: Path,
-        *,
-        upload_images: bool = True,
-        debug: bool = False,
-        debug_dir: Path | None = None,
-    ) -> DoclingExtraction:
-        if not file_path.exists():
-            raise FileNotFoundError(file_path)
-
-        try:
-            with file_path.open("rb") as fp:
-                files = {"files": (file_path.name, fp, "application/octet-stream")}
-                response = requests.post(self.service_url, files=files, timeout=DOCLING_SERVE_TIMEOUT)
-            response.raise_for_status()
-        except requests.HTTPError as exc:
-            detail = self._response_detail(exc.response)
-            suffix = f"; {detail}" if detail else ""
-            raise DoclingUnavailableError(f"docling-serve request failed: {exc}{suffix}") from exc
-        except Exception as exc:
-            raise DoclingUnavailableError(f"docling-serve request failed: {exc}") from exc
-
-        try:
-            payload = response.json()
-        except Exception as exc:
-            detail = self._response_detail(response)
-            suffix = f"; {detail}" if detail else ""
-            raise RuntimeError(f"docling-serve returned invalid JSON{suffix}") from exc
-
-        text = self._extract_text(payload)
-        base_slug = slugify(file_path.stem)
-        effective_debug_dir = debug_dir or Path("logs") / "docling"
-        request_info = {
-            "service_url": self.service_url,
-            "file_name": file_path.name,
-            "file_size": file_path.stat().st_size if file_path.exists() else None,
-        }
-
-        text, inline_images = self._extract_inline_images(
-            text, base_slug, upload_images=upload_images, debug_dir=effective_debug_dir if debug else None
-        )
-        images_payload = payload.get("images") or payload.get("media", {}).get("images") or []
-        stored_images = self._store_images(
-            images_payload,
-            base_slug,
-            upload=upload_images,
-            debug_dir=effective_debug_dir if debug else None,
-        )
-        if inline_images:
-            stored_images.extend(inline_images)
-
-        text_with_refs = self._inject_image_refs(text, stored_images)
-        text_for_chunks = self._strip_extracted_images_section(text_with_refs)
-        mime = payload.get("media_type") or payload.get("mime_type")
-        chunks = self._chunk_text(text_for_chunks)
-        if debug:
-            self._write_debug_dump(
-                text_for_chunks,
-                stored_images,
-                effective_debug_dir,
-                payload=payload,
-                request_info=request_info,
-            )
-        return DoclingExtraction(
-            text=text_for_chunks,
-            mime_type=mime,
-            chunks=chunks,
-            images=stored_images,
-            slug=base_slug,
-        )
-
-    def _extract_text(self, payload: Dict[str, object]) -> str:
-        # 1) Neues docling-Schema: Text liegt in payload["document"][...]
-        doc = payload.get("document")
-        if isinstance(doc, dict):
-            for key in ("md_content", "text_content", "html_content", "json_content"):
-                value = doc.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value
-
-        # 2) Fallback: ältere / alternative Schemas auf Top-Level
-        for key in ("text", "markdown", "content", "body"):
-            value = payload.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-
-        # 3) Wenn immer noch nichts gefunden: wie bisher Fehler werfen
-        detail = self._payload_detail(payload)
-        suffix = f"; {detail}" if detail else ""
-        raise RuntimeError(f"docling-serve response did not contain textual content{suffix}")
-
-    def _store_images(
-        self,
-        images_payload,
-        base_slug: str,
-        *,
-        upload: bool = True,
-        debug_dir: Path | None = None,
-    ) -> List[Dict[str, object]]:
-        stored: List[Dict[str, object]] = []
-        if not images_payload:
-            return stored
-
-        items = images_payload
-        if isinstance(images_payload, dict):
-            items = [{"name": name, "data": data} for name, data in images_payload.items()]
-
-        remote_base = posixpath.normpath(f"/{self.remote_image_dir}/{base_slug}")
-
-        for idx, item in enumerate(items, start=1):
-            if not isinstance(item, dict):
-                continue
-            raw = self._decode_data(item.get("data") or item.get("content") or item.get("base64") or item.get("payload") or item.get("value"))
-            if raw is None:
-                continue
-            name = item.get("name") or item.get("id")
-            mime = item.get("mime") or item.get("content_type") or item.get("type")
-            ext = self._extension_from_mime(mime) or (Path(name).suffix if name else "") or ".bin"
-            fname = name or f"{base_slug}-{idx}{ext if ext.startswith('.') else '.' + ext}"
-            reference = posixpath.normpath(f"{remote_base}/{fname}")
-            uploaded = False
-            target = ensure_dir(self.image_dir / base_slug) / fname
-            try:
-                if self.nextcloud_client:
-                    if upload:
-                        log(f"[image_upload] pushing {fname} to Nextcloud {reference}")
-                        self.nextcloud_client.upload_bytes(reference, raw)
-                        uploaded = True
-                else:
-                    target = ensure_dir(self.image_dir / base_slug) / fname
-                    if upload:
-                        target.write_bytes(raw)
-                        reference = str(target)
-                        uploaded = True
-            except Exception as exc:
-                log(f"[image_store_failed] {target}: {exc}")
-                continue
-
-            stored.append(
-                {
-                    "label": fname,
-                    "path": reference,
-                    "reference": reference,
-                    "mime": mime or mimetypes.guess_type(fname)[0] or "application/octet-stream",
-                    "data": raw,
-                    "uploaded": uploaded,
-                }
-            )
-        return stored
-
-    def _decode_data(self, data: Optional[str]) -> Optional[bytes]:
-        if not data:
-            return None
-        if isinstance(data, bytes):
-            return data
-        try:
-            if data.startswith("data:"):
-                _, _, b64_part = data.partition(",")
-                return base64.b64decode(b64_part)
-            return base64.b64decode(data)
-        except Exception:
-            return None
-
-    def _extension_from_mime(self, mime: Optional[str]) -> str:
-        if not mime:
-            return ""
-        ext = mimetypes.guess_extension(mime)
-        return ext or ""
-
-    def _extract_inline_images(
-        self, text: str, base_slug: str, *, upload_images: bool, debug_dir: Path | None
-    ) -> Tuple[str, List[Dict[str, object]]]:
-        if not text:
-            return text or "", []
-
-        pattern = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<data>data:image/[^)]+)\)")
-        matches = list(pattern.finditer(text))
-        if not matches:
-            return text, []
-
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        items: List[Dict[str, object]] = []
-        item_indices: List[Optional[int]] = []
-        for idx, match in enumerate(matches, start=1):
-            data_uri = match.group("data")
-            if not data_uri.lower().startswith("data:image/"):
-                item_indices.append(None)
-                continue
-            identifier = f"{base_slug}_{timestamp}_{idx}.png"
-            items.append({"name": identifier, "data": data_uri, "mime": "image/png"})
-            item_indices.append(len(items) - 1)
-
-        stored_images = (
-            self._store_images(items, base_slug, upload=upload_images, debug_dir=debug_dir)
-            if items
-            else []
-        )
-        last_end = 0
-        cleaned_parts: List[str] = []
-
-        for idx, match in enumerate(matches, start=1):
-            cleaned_parts.append(text[last_end:match.start()])
-            item_idx = item_indices[idx - 1] if idx - 1 < len(item_indices) else None
-            stored = stored_images[item_idx] if item_idx is not None and item_idx < len(stored_images) else None
-            fallback_label = items[item_idx]["name"] if item_idx is not None and item_idx < len(items) else f"{base_slug}_{timestamp}_{idx}.png"
-            target = stored.get("label") if stored else fallback_label
-            alt_text = match.group("alt") or "image"
-            cleaned_parts.append(f"![{alt_text}]({target})")
-            last_end = match.end()
-
-        cleaned_parts.append(text[last_end:])
-        return "".join(cleaned_parts), stored_images
-
-    def upload_images(self, extraction: DoclingExtraction):
-        if not extraction.images:
-            return
-        for img in extraction.images:
-            if img.get("uploaded"):
-                continue
-            data = img.get("data")
-            fname = img.get("label") or "image"
-            remote_base = posixpath.normpath(f"/{self.remote_image_dir}/{extraction.slug}")
-            remote_path = posixpath.normpath(f"{remote_base}/{fname}")
-            if not data or not self.nextcloud_client:
-                continue
-            try:
-                log(f"[image_upload] pushing {fname} to Nextcloud {remote_path}")
-                self.nextcloud_client.upload_bytes(remote_path, data)
-                img["reference"] = remote_path
-                img["path"] = remote_path
-                img["uploaded"] = True
-            except Exception as exc:
-                log(f"[image_upload_failed] {remote_path}: {exc}")
-
-    def _write_debug_dump(
-        self,
-        text: str,
-        images: List[Dict[str, object]],
-        debug_dir: Path,
-        *,
-        chunk_texts: List[str] | None = None,
-        payload: Dict[str, object] | None = None,
-        request_info: Dict[str, object] | None = None,
-    ):
-        try:
-            doc_dir = ensure_dir(debug_dir)
-            (doc_dir / "extracted.txt").write_text(text or "", encoding="utf-8")
-            if request_info:
-                (doc_dir / "docling_request.json").write_text(
-                    json.dumps(request_info, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-            if payload:
-                (doc_dir / "docling_response.json").write_text(
-                    json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-            if chunk_texts:
-                chunk_lines = []
-                for idx, chunk in enumerate(chunk_texts, start=1):
-                    chunk_lines.append(f"### Chunk {idx}\n{chunk}\n")
-                (doc_dir / "chunks_pre_context.txt").write_text(
-                    "\n".join(chunk_lines), encoding="utf-8"
-                )
-
-            if images:
-                image_dir = ensure_dir(doc_dir / "images")
-                manifest = []
-                for img in images:
-                    label = img.get("label") or img.get("name") or "image"
-                    reference = img.get("reference") or img.get("path")
-                    manifest.append(
-                        {
-                            "label": label,
-                            "reference": reference,
-                            "mime": img.get("mime"),
-                            "uploaded": bool(img.get("uploaded")),
-                        }
-                    )
-                    data = img.get("data")
-                    if data:
-                        try:
-                            target = image_dir / str(label)
-                            target.write_bytes(data if isinstance(data, (bytes, bytearray)) else bytes(data))
-                        except Exception:
-                            continue
-                (doc_dir / "images.json").write_text(
-                    json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-        except Exception as exc:
-            log(f"[docling_debug_write_failed] err={exc}")
-
-    def _inject_image_refs(self, text: str, images: List[Dict[str, object]]) -> str:
-        if not images:
-            return text or ""
-        base = (text or "").rstrip()
-        lines = [base] if base else []
-        lines.append("")
-        lines.append("## Extracted images")
-        for img in images:
-            label = img.get("label", "image")
-            ref = img.get("reference", "")
-            lines.append(f"![{label}]({ref})")
-        return "\n".join(lines).strip()
-
-    def _strip_extracted_images_section(self, text: str) -> str:
-        if not text:
-            return text or ""
-        pattern = re.compile(
-            r"\n## Extracted images\s*\n(?:!\[[^\]]*\]\([^\)]+\)\s*\n?)+\s*$",
-            re.IGNORECASE,
-        )
-        cleaned = pattern.sub("", text)
-        return cleaned.rstrip()
-
-    def _chunk_text(self, text: str) -> List[DoclingChunk]:
-        chunks: List[DoclingChunk] = []
-        if not text:
-            return chunks
-        step = max(self.chunk_size - self.chunk_overlap, 1)
-        for idx, start in enumerate(range(0, len(text), step), start=1):
-            if self.max_chunks and idx > self.max_chunks:
-                break
-            end = min(start + self.chunk_size, len(text))
-            chunk_text = text[start:end].strip()
-            if not chunk_text:
-                continue
-            chunks.append(DoclingChunk(text=chunk_text, meta={"chunk_index": idx}))
-            if end >= len(text):
-                break
-        if not chunks and text.strip():
-            chunks.append(DoclingChunk(text=text.strip(), meta={"chunk_index": 1}))
-        return chunks
-
-    def _response_detail(self, response: Optional[requests.Response]) -> str:
-        if response is None:
-            return ""
-
-        detail: str = ""
-        try:
-            parsed = response.json()
-            if isinstance(parsed, dict):
-                detail = str(parsed.get("detail") or parsed.get("error") or parsed)
-            else:
-                detail = str(parsed)
-        except Exception:
-            try:
-                detail = response.text
-            except Exception:
-                detail = ""
-
-        detail = (detail or "").strip()
-        if len(detail) > 500:
-            detail = detail[:500] + "…"
-        return detail
-
-    def _payload_detail(self, payload: Optional[Dict[str, object]]) -> str:
-        if not payload:
-            return ""
-        try:
-            if isinstance(payload, dict):
-                for key in ("detail", "error", "message", "status"):
-                    if payload.get(key):
-                        return str(payload.get(key))[:500]
-            return str(payload)[:500]
-        except Exception:
-            return ""
-
-
-_DOCLING_INGESTOR: Optional[DoclingServeIngestor] = None
-
-
-def get_docling_ingestor() -> DoclingServeIngestor:
-    global _DOCLING_INGESTOR
-    if _DOCLING_INGESTOR is None:
-        nxc = get_nextcloud_client()
-        log(f"[docling_ingestor] using Nextcloud images dir {NEXTCLOUD_IMAGE_DIR}")
-        _DOCLING_INGESTOR = DoclingServeIngestor(
-            chunk_size=MAX_CHARS,
-            chunk_overlap=OVERLAP,
-            max_chunks=MAX_CHUNKS,
-            service_url=DOCLING_SERVE_URL,
-            image_dir=Path(tempfile.gettempdir()) / "docling-images",
-            nextcloud_client=nxc,
-            remote_image_dir=NEXTCLOUD_IMAGE_DIR,
-        )
-    return _DOCLING_INGESTOR
-
 def ai_score_text(
     ollama_host,
     model,
@@ -1189,7 +600,6 @@ def process_one(conn, job_id, file_id):
     original_path = str(path)
     p = Path(path)
     temp_file: Path | None = None
-    conversion_dir: Path | None = None
     size_hint = _get(row, "size")
     log(
         f"[process_path] job_id={job_id} file_id={file_id} path={p} size={size_hint} priority={_get(row, 'priority')}"
@@ -1236,85 +646,21 @@ def process_one(conn, job_id, file_id):
         finish_error(conn, job_id, file_id, "error_missing_file", "file missing on disk")
         return
 
-    debug_dir: Optional[Path] = None
-    if DEBUG:
-        try:
-            ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-            original_name = Path(original_path).name or p.name
-            safe_name = slugify(Path(original_name).stem)
-            debug_dir = ensure_dir(Path("./debug") / f"{ts}_{safe_name}")
-        except Exception:
-            debug_dir = None
-
-    docling_path = p
     try:
-        docling_path, conversion_dir = convert_for_docling(p)
-    except Exception as exc:
-        docling_path = p
-        log(f"[convert_for_docling_error] source={p} err={exc}")
-
-    try:
-        size = docling_path.stat().st_size
-        log(
-            f"[extract_start] job_id={job_id} file_id={file_id} path={docling_path} "
-            f"size={size} original={p}"
+        extraction_outcome = extract_document(
+            p,
+            job_id=job_id,
+            file_id=file_id,
+            original_path=original_path,
         )
-        ingestor = get_docling_ingestor()
-
-        extraction: Optional[DoclingExtraction] = None
-        docling_error: Optional[Exception] = None
-        docling_source = "docling-serve"
-        try:
-            extraction = ingestor.extract(
-                docling_path,
-                upload_images=False,
-                debug=DEBUG,
-                debug_dir=debug_dir,
-            )
-        except Exception as e:
-            docling_error = e
-            log(f"[extract_error] job_id={job_id} file_id={file_id} path={docling_path} err={e}")
-
-        if extraction is None and docling_path.suffix.lower() == ".pdf":
-            log(
-                f"[extract_fallback] job_id={job_id} file_id={file_id} using legacy PDF fallback due to {docling_error}"
-            )
-            safe_log(conn, job_id, file_id, "docling_pdf_fallback", str(docling_error))
-            try:
-                fallback_text = legacy_pdf_fallback_text(p)
-            except Exception as e:
-                fallback_text = ""
-                if docling_error is None:
-                    docling_error = e
-            if fallback_text:
-                log(
-                    f"[extract_fallback_success] job_id={job_id} file_id={file_id} text_len={len(fallback_text)}"
-                )
-                chunks = ingestor._chunk_text(fallback_text)
-                extraction = DoclingExtraction(
-                    text=fallback_text,
-                    mime_type="text/plain",
-                    chunks=chunks,
-                    images=[],
-                    slug=slugify(p.stem),
-                )
-                docling_source = "pdf_fallback"
-
-        if extraction is None:
-            update_file_result(
-                conn,
-                file_id,
-                {"accepted": False, "skipped": "extract_failed", "error": str(docling_error)},
-            )
-            finish_error(conn, job_id, file_id, "error_extract_failed", f"docling_failed: {docling_error}")
-            return
+        extraction = extraction_outcome.extraction
+        ingestor = extraction_outcome.ingestor
+        docling_source = extraction_outcome.source
+        debug_dir = extraction_outcome.debug_dir
 
         clean = (extraction.text or "").strip()
         detected = extraction.mime_type or "docling-serve"
-        log(
-            f"[extract_ok] job_id={job_id} file_id={file_id} mime={detected} chars={len(clean)} chunks={len(extraction.chunks)} source={docling_source}"
-        )
-        log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; size={size}; source={docling_source}")
+        log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; source={docling_source}")
         log_decision(
             conn,
             job_id,
@@ -1322,6 +668,14 @@ def process_one(conn, job_id, file_id):
             "extract_ok",
             f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}",
         )
+    except ExtractionFailed as exc:
+        update_file_result(
+            conn,
+            file_id,
+            {"accepted": False, "skipped": "extract_failed", "error": str(exc)},
+        )
+        finish_error(conn, job_id, file_id, "error_extract_failed", str(exc))
+        return
 
         if not clean or len(clean) < MIN_CHARS:
             update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
@@ -1376,7 +730,7 @@ def process_one(conn, job_id, file_id):
             return
 
         try:
-            ingestor.upload_images(extraction)
+            extraction_outcome.upload_images()
             replace_file_images(conn, file_id, extraction.images)
         except Exception as exc:
             update_file_result(conn, file_id, {"accepted": False, "error": f"image_upload_failed: {exc}"})
@@ -1450,13 +804,7 @@ def process_one(conn, job_id, file_id):
             pass
 
         if DEBUG:
-            debug_dump_dir = debug_dir or Path("logs") / "docling"
-            ingestor._write_debug_dump(
-                extraction.text,
-                extraction.images,
-                debug_dump_dir,
-                chunk_texts=chunk_texts,
-            )
+            extraction_outcome.debug_dump(chunk_texts=chunk_texts)
 
         chunks: List[DoclingChunk] = []
         for idx, chunk_text in enumerate(chunk_texts, 1):
@@ -1556,7 +904,7 @@ def process_one(conn, job_id, file_id):
                 )
                 errors.append(f"chunk {idx} error: {e}")
 
-        sanitized_images = sanitize_images(extraction.images)
+        sanitized_images = extraction_outcome.sanitized_images()
 
         result = {
             "accepted": len(errors) == 0,
@@ -1582,11 +930,6 @@ def process_one(conn, job_id, file_id):
         if temp_file and temp_file.exists():
             try:
                 temp_file.unlink()
-            except Exception:
-                pass
-        if conversion_dir and conversion_dir.exists():
-            try:
-                shutil.rmtree(conversion_dir, ignore_errors=True)
             except Exception:
                 pass
 
