@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
-from nextcloud_client import NextcloudClient
+from nextcloud_client import NextcloudClient, env_client
 
 import initENV
 
@@ -721,8 +721,19 @@ class DoclingServeIngestor:
                 )
             if chunk_texts:
                 (debug_dir / "chunks.json").write_text(
-                    json.dumps(chunk_texts, indent=2), encoding="utf-8"
+                json.dumps(chunk_texts, indent=2), encoding="utf-8"
                 )
+            if images:
+                image_dir = debug_dir / "images"
+                image_dir.mkdir(parents=True, exist_ok=True)
+                for img in images:
+                    try:
+                        label = img.get("label") or "image"
+                        data = img.get("data")
+                        if isinstance(data, bytes):
+                            (image_dir / label).write_bytes(data)
+                    except Exception as exc:
+                        log(f"[docling_debug_image_write_failed] image={img.get('label')} err={exc}")
         except Exception as exc:
             log(f"[docling_debug_write_failed] err={exc}")
 
@@ -769,13 +780,19 @@ def get_docling_ingestor() -> DoclingServeIngestor:
     async_url = initENV.DOCLING_SERVE_ASYNC_URL or None
     if not async_url and initENV.DOCLING_SERVE_USE_ASYNC:
         async_url = None  # derive from service_url
+    nextcloud_client = None
+    try:
+        if initENV.NEXTCLOUD_TOKEN:
+            nextcloud_client = env_client()
+    except Exception as exc:
+        log(f"[nextcloud_client_unavailable] err={exc}")
     return DoclingServeIngestor(
         chunk_size=initENV.MAX_CHARS,
         chunk_overlap=initENV.OVERLAP,
         max_chunks=initENV.MAX_CHUNKS,
         service_url=initENV.DOCLING_SERVE_URL,
         image_dir=Path(initENV.NEXTCLOUD_IMAGE_DIR),
-        nextcloud_client=None,
+        nextcloud_client=nextcloud_client,
         remote_image_dir=initENV.NEXTCLOUD_IMAGE_DIR,
         async_url=async_url,
         async_enabled=initENV.DOCLING_SERVE_USE_ASYNC,
