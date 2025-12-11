@@ -92,16 +92,33 @@ WORKER_ID = f"{os.uname().nodename}-pid{os.getpid()}"
 LOG_PATH = Path("logs") / "scan_scheduler.log"
 
 _LOGGER: Optional[logging.Logger] = None
-if DEBUG:
+
+
+def _configure_debug_logger() -> Optional[logging.Logger]:
+    if not DEBUG:
+        return None
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _LOGGER = logging.getLogger("ingest_worker")
-        _LOGGER.setLevel(logging.INFO)
-        handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(asctime)s [worker] [%(name)s] %(message)s"))
-        _LOGGER.addHandler(handler)
+        logger = logging.getLogger("ingest_worker")
+        # Avoid duplicate handlers if multiple modules configure the same logger
+        if not any(
+            isinstance(h, logging.FileHandler)
+            and getattr(h, "baseFilename", None) == str(LOG_PATH)
+            for h in logger.handlers
+        ):
+            logger.setLevel(logging.INFO)
+            handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s [worker] [%(name)s] %(message)s")
+            )
+            logger.addHandler(handler)
+            logger.propagate = False
+        return logger
     except Exception:
-        _LOGGER = None
+        return None
+
+
+_LOGGER = _configure_debug_logger()
 
 _NEXTCLOUD_CLIENT: NextcloudClient | None = None
 
