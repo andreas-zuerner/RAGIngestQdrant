@@ -197,17 +197,33 @@ def legacy_pdf_fallback_text(file_path: Path) -> str:
 
 
 _LOGGER: Optional[logging.Logger] = None
-if initENV.DEBUG:
+
+
+def _configure_debug_logger() -> Optional[logging.Logger]:
+    if not initENV.DEBUG:
+        return None
     try:
         log_path = Path("logs") / "scan_scheduler.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        _LOGGER = logging.getLogger("ingest_worker")
-        _LOGGER.setLevel(logging.INFO)
-        handler = logging.FileHandler(log_path, encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(asctime)s [worker] [%(name)s] %(message)s"))
-        _LOGGER.addHandler(handler)
+        logger = logging.getLogger("ingest_worker")
+        if not any(
+            isinstance(h, logging.FileHandler)
+            and getattr(h, "baseFilename", None) == str(log_path)
+            for h in logger.handlers
+        ):
+            logger.setLevel(logging.INFO)
+            handler = logging.FileHandler(log_path, encoding="utf-8")
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s [worker] [%(name)s] %(message)s")
+            )
+            logger.addHandler(handler)
+            logger.propagate = False
+        return logger
     except Exception:
-        _LOGGER = None
+        return None
+
+
+_LOGGER = _configure_debug_logger()
 
 WORKER_ID = f"{os.uname().nodename}-pid{os.getpid()}"
 
