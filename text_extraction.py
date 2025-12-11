@@ -203,7 +203,7 @@ def _configure_debug_logger() -> Optional[logging.Logger]:
     if not initENV.DEBUG:
         return None
     try:
-        log_path = Path("logs") / "scan_scheduler.log"
+        log_path = (Path("logs") / "scan_scheduler.log").resolve()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         logger = logging.getLogger("ingest_worker")
         if not any(
@@ -217,7 +217,7 @@ def _configure_debug_logger() -> Optional[logging.Logger]:
                 logging.Formatter("%(asctime)s [worker] [%(name)s] %(message)s")
             )
             logger.addHandler(handler)
-            logger.propagate = False
+        logger.propagate = False
         return logger
     except Exception:
         return None
