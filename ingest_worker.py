@@ -665,53 +665,54 @@ def process_one(conn, job_id, file_id):
         return
 
     try:
-        extraction_outcome = extract_document(
-            p,
-            job_id=job_id,
-            file_id=file_id,
-            original_path=original_path,
-        )
-        extraction = extraction_outcome.extraction
-        ingestor = extraction_outcome.ingestor
-        docling_source = extraction_outcome.source
-        debug_dir = extraction_outcome.debug_dir
-
-        clean = (extraction.text or "").strip()
-        detected = extraction.mime_type or "docling-serve"
-        log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; source={docling_source}")
-        log_decision(
-            conn,
-            job_id,
-            file_id,
-            "extract_ok",
-            f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}",
-        )
-    except ExtractionFailed as exc:
-        update_file_result(
-            conn,
-            file_id,
-            {"accepted": False, "skipped": "extract_failed", "error": str(exc)},
-        )
-        finish_error(conn, job_id, file_id, "error_extract_failed", str(exc))
-        return
-
+        try:
+            extraction_outcome = extract_document(
+                p,
+                job_id=job_id,
+                file_id=file_id,
+                original_path=original_path,
+            )
+            extraction = extraction_outcome.extraction
+            ingestor = extraction_outcome.ingestor
+            docling_source = extraction_outcome.source
+            debug_dir = extraction_outcome.debug_dir
+    
+            clean = (extraction.text or "").strip()
+            detected = extraction.mime_type or "docling-serve"
+            log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; source={docling_source}")
+            log_decision(
+                conn,
+                job_id,
+                file_id,
+                "extract_ok",
+                f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}",
+            )
+        except ExtractionFailed as exc:
+            update_file_result(
+                conn,
+                file_id,
+                {"accepted": False, "skipped": "extract_failed", "error": str(exc)},
+            )
+            finish_error(conn, job_id, file_id, "error_extract_failed", str(exc))
+            return
+    
         if not clean or len(clean) < MIN_CHARS:
             update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
             log_decision(conn, job_id, file_id, "threshold", f"skip: too_short chars={len(clean)} < MIN_CHARS={MIN_CHARS}")
             finish_success(conn, job_id, file_id, "skipped_too_short")
             return
-
+    
         if len(clean) > MAX_TEXT_CHARS:
             clean = clean[:MAX_TEXT_CHARS]
             log_decision(conn, job_id, file_id, "threshold", f"cap: truncated to {MAX_TEXT_CHARS} chars")
-
+    
         doc_dbg_dir: Optional[Path] = None
         if DEBUG and debug_dir:
             try:
                 doc_dbg_dir = ensure_dir(debug_dir / "ai_score")
             except Exception:
                 doc_dbg_dir = None
-
+    
         try:
             if not OLLAMA_HOST:
                 safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
@@ -737,7 +738,7 @@ def process_one(conn, job_id, file_id):
             update_file_result(conn, file_id, {"accepted": False, "error": f"ai_scoring_failed: {e}"})
             finish_error(conn, job_id, file_id, "error_ai_scoring", f"ai_scoring_failed: {e}")
             return
-
+    
         if not is_rel or conf < RELEVANCE_THRESHOLD:
             log(
                 f"[ai_threshold_skip] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf} threshold={RELEVANCE_THRESHOLD}"
@@ -746,7 +747,7 @@ def process_one(conn, job_id, file_id):
             log_decision(conn, job_id, file_id, "threshold", f"skip: is_relevant={is_rel} conf={conf} < RELEVANCE_THRESHOLD={RELEVANCE_THRESHOLD}")
             finish_success(conn, job_id, file_id, "ai_not_relevant")
             return
-
+    
         try:
             extraction_outcome.upload_images()
             replace_file_images(conn, file_id, extraction.images)
@@ -754,7 +755,7 @@ def process_one(conn, job_id, file_id):
             update_file_result(conn, file_id, {"accepted": False, "error": f"image_upload_failed: {exc}"})
             finish_error(conn, job_id, file_id, "error_image_upload", f"image_upload_failed: {exc}")
             return
-
+    
         log(
             f"[chunking_start] job_id={job_id} file_id={file_id} len={len(clean)} max_chunks={MAX_CHUNKS} overlap={OVERLAP}"
         )
@@ -776,7 +777,7 @@ def process_one(conn, job_id, file_id):
             debug=DEBUG,
             return_debug=True,
         )
-
+    
         chunk_source = "llm_chunking"
         if chunk_meta.get("chunk_source") == "fallback":
             chunk_source = "llm_fallback"
@@ -791,7 +792,7 @@ def process_one(conn, job_id, file_id):
             log_debug(
                 f"[chunking_meta] job_id={job_id} file_id={file_id} llm={chunk_meta.get('llm_info')} fallback={chunk_meta.get('fallback_used')}"
             )
-
+    
         if not chunk_texts and extraction.chunks:
             chunk_texts = [c.text for c in extraction.chunks]
             chunk_source = "docling_fallback"
@@ -820,10 +821,10 @@ def process_one(conn, job_id, file_id):
             )
         except Exception:
             pass
-
+    
         if DEBUG:
             extraction_outcome.debug_dump(chunk_texts=chunk_texts)
-
+    
         chunks: List[DoclingChunk] = []
         for idx, chunk_text in enumerate(chunk_texts, 1):
             meta: Dict[str, object] = {
@@ -839,7 +840,7 @@ def process_one(conn, job_id, file_id):
             log_debug(
                 f"[chunk_built] job_id={job_id} file_id={file_id} idx={idx}/{len(chunk_texts)} len={len(chunk_text)} meta={meta}"
             )
-
+    
         try:
             enriched = enrich_chunks_with_context(
                 document=clean,
@@ -855,7 +856,7 @@ def process_one(conn, job_id, file_id):
                 chunk_source += "+context"
         except Exception as e:
             safe_log(conn, job_id, file_id, "context_fallback", f"{e}")
-
+    
         log(
             f"[chunk_plan] job_id={job_id} file_id={file_id} chunks={len(chunks)} source={chunk_source} overlap={OVERLAP}"
         )
@@ -866,7 +867,7 @@ def process_one(conn, job_id, file_id):
             "chunk_plan",
             f"chunks={len(chunks)} via {chunk_source} overlap={OVERLAP}",
         )
-
+    
         errors = []
         for idx, chunk in enumerate(chunks, 1):
             chunk_meta = {
@@ -921,9 +922,9 @@ def process_one(conn, job_id, file_id):
                     f"[brain_error] job_id={job_id} file_id={file_id} chunk={idx}/{len(chunks)} err={e}"
                 )
                 errors.append(f"chunk {idx} error: {e}")
-
+    
         sanitized_images = extraction_outcome.sanitized_images()
-
+    
         result = {
             "accepted": len(errors) == 0,
             "ai": ai,
@@ -941,7 +942,7 @@ def process_one(conn, job_id, file_id):
             update_file_result(conn, file_id, result)
             finish_error(conn, job_id, file_id, "error_brain_ingest", "; ".join(errors)[:500])
             return
-
+    
         update_file_result(conn, file_id, result)
         finish_success(conn, job_id, file_id, "vectorized")
     finally:
