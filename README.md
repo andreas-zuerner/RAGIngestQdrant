@@ -73,10 +73,9 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
 * Der Scheduler durchsucht standardmäßig zwei Nextcloud-Ordner per WebDAV: einen
   Dokumente-Ordner (`NEXTCLOUD_DOC_DIR`, Default `/RAGdocuments`) und
   einen Bilder-Ordner (`NEXTCLOUD_IMAGE_DIR`, Default
-  `/RAG-images`). Beide Pfade lassen sich alternativ über
-  `ROOT_DIRS` (kommagetrennt) überschreiben. Der Bilder-Ordner wird von der
-  SQLite-Datenbank genauso überwacht wie der Dokument-Ordner und kann dadurch
-  bequem mit einer Admin-Oberfläche wie phpLiteAdmin gepflegt werden.
+  `/RAG-images`). Der Bilder-Ordner wird von der SQLite-Datenbank genauso
+  überwacht wie der Dokument-Ordner und kann dadurch bequem mit einer
+  Admin-Oberfläche wie phpLiteAdmin gepflegt werden.
 * `scan_scheduler.py` initialisiert den WebDAV-Client über `env_client()` und
   läuft mit `client.walk(...)` rekursiv über die oben genannten Nextcloud-
   Ordner. So landen neu hochgeladene Dateien unmittelbar als Jobs in der

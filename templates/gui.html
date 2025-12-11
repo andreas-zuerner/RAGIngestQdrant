@@ -4,23 +4,60 @@
   <meta charset="utf-8">
   <title>RAG Control Panel</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; background: #f4f6f8; }
+    :root {
+      --bg: #f4f6f8;
+      --text: #1f2933;
+      --section-bg: #ffffff;
+      --border: #d6d6d6;
+      --muted: #4a5568;
+      --flash-bg: #eef5ff;
+      --flash-border: #b3d0ff;
+      --accent: #1d4ed8;
+      --accent-contrast: #ffffff;
+      --shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+    }
+    body.dark {
+      --bg: #0f172a;
+      --text: #e5e7eb;
+      --section-bg: #111827;
+      --border: #27303f;
+      --muted: #cbd5e1;
+      --flash-bg: #1f2937;
+      --flash-border: #374151;
+      --accent: #3b82f6;
+      --accent-contrast: #0b1221;
+      --shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    }
+    body { font-family: Arial, sans-serif; margin: 20px; background: var(--bg); color: var(--text); }
     h1 { margin: 0; }
-    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-    .scheduler-actions { display: flex; gap: 8px; align-items: center; }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 12px; }
+    .header-actions { display: flex; align-items: center; gap: 16px; }
+    .scheduler-actions { display: flex; gap: 10px; align-items: center; }
     .scheduler-actions form { margin: 0; }
-    button { cursor: pointer; }
-    section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); }
+    button { cursor: pointer; border-radius: 6px; padding: 8px 12px; border: 1px solid var(--border); background: var(--section-bg); color: var(--text); transition: background 0.2s, transform 0.1s; }
+    button:hover { background: rgba(0, 0, 0, 0.04); }
+    button:active { transform: translateY(1px); }
+    .scheduler-actions button { padding: 12px 18px; font-size: 1rem; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-contrast); box-shadow: var(--shadow); }
+    .scheduler-actions button:hover { opacity: 0.94; }
+    .theme-toggle { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+    .theme-label { color: var(--muted); font-weight: 500; }
+    .switch { position: relative; display: inline-block; width: 48px; height: 26px; }
+    .switch input { display: none; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #cbd5e1; transition: 0.4s; border-radius: 26px; }
+    .slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 3px; bottom: 3px; background-color: #fff; transition: 0.4s; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+    input:checked + .slider { background-color: var(--accent); }
+    input:checked + .slider:before { transform: translateX(22px); }
+    section { background: var(--section-bg); border-radius: 8px; padding: 16px; margin-bottom: 20px; box-shadow: var(--shadow); border: 1px solid var(--border); }
     form { margin-bottom: 8px; }
-    textarea { width: 100%; height: 240px; }
+    textarea { width: 100%; height: 240px; background: var(--section-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e0e0e0; }
-    .flash { background: #eef5ff; border: 1px solid #b3d0ff; padding: 8px; margin-bottom: 6px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+    .flash { background: var(--flash-bg); border: 1px solid var(--flash-border); padding: 8px; margin-bottom: 6px; }
     .env-table th:nth-child(1), .env-table td:nth-child(1) { width: 20%; }
     .env-table th:nth-child(2), .env-table td:nth-child(2) { width: 20%; }
     .env-table th:nth-child(3), .env-table td:nth-child(3) { width: 60%; }
-    .env-table input { width: 100%; box-sizing: border-box; }
-    .env-desc { color: #4a5568; font-size: 0.95em; }
+    .env-table input { width: 100%; box-sizing: border-box; background: var(--section-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
+    .env-desc { color: var(--muted); font-size: 0.95em; }
     .grid-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
     .grid-prompts-log { display: grid; grid-template-columns: 0.4fr 0.6fr; gap: 16px; align-items: stretch; }
     @media (max-width: 900px) { .grid-prompts-log { grid-template-columns: 1fr; } }
@@ -29,20 +66,20 @@
     .search-layout { display: grid; grid-template-columns: 2fr 3fr; gap: 16px; align-items: start; }
     .search-box { display: flex; flex-direction: column; gap: 8px; }
     .results-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
-    .result-group { border: 1px solid #d6d6d6; background: #f8fafc; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
-    .group-header { width: 100%; text-align: left; display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 10px; background: #eef5ff; border: none; cursor: pointer; }
-    .group-header:hover { background: #e1edff; }
+    .result-group { border: 1px solid var(--border); background: var(--section-bg); border-radius: 6px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+    .group-header { width: 100%; text-align: left; display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 10px; background: var(--flash-bg); border: none; cursor: pointer; color: var(--text); }
+    .group-header:hover { background: rgba(147, 197, 253, 0.3); }
     .group-meta { display: flex; flex-direction: column; gap: 2px; }
     .group-title { font-weight: bold; }
-    .group-sub { color: #4a5568; font-size: 0.9em; }
+    .group-sub { color: var(--muted); font-size: 0.9em; }
     .toggle-pill { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; border-radius: 12px; padding: 4px 8px; font-size: 0.85em; }
     .points-list { list-style: none; padding: 0 10px 10px 10px; margin: 0; display: flex; flex-direction: column; gap: 6px; }
-    .point-item { width: 100%; text-align: left; border: 1px solid #d6d6d6; background: #fff; border-radius: 6px; padding: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; }
-    .point-item:hover { border-color: #8ab4f8; background: #eef3ff; }
-    .point-item.active { border-color: #1d4ed8; background: #e0ecff; }
+    .point-item { width: 100%; text-align: left; border: 1px solid var(--border); background: var(--section-bg); border-radius: 6px; padding: 8px; cursor: pointer; transition: border-color 0.2s, background 0.2s; color: var(--text); }
+    .point-item:hover { border-color: #8ab4f8; background: rgba(226, 232, 240, 0.35); }
+    .point-item.active { border-color: var(--accent); background: rgba(59, 130, 246, 0.15); }
     .point-title { font-weight: bold; }
-    .point-sub { color: #4a5568; font-size: 0.9em; }
-    .detail-panel { border: 1px solid #d6d6d6; border-radius: 8px; padding: 12px; background: #fdfefe; min-height: 220px; white-space: pre-wrap; word-break: break-word; }
+    .point-sub { color: var(--muted); font-size: 0.9em; }
+    .detail-panel { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--section-bg); min-height: 220px; white-space: pre-wrap; word-break: break-word; }
     .detail-panel pre { white-space: pre-wrap; word-break: break-word; }
     #detail-content { white-space: pre-wrap; word-break: break-word; }
     .detail-header { font-weight: bold; margin-bottom: 6px; }
@@ -50,18 +87,27 @@
     .prompt-area textarea { height: 160px; }
   </style>
 </head>
-<body>
-  <div class="header">
-    <h1>RAG Control Panel</h1>
-    <div class="scheduler-actions">
-      <form method="post" action="{{ url_for('start_scheduler') }}">
-        <button type="submit">Start scheduler</button>
-      </form>
-      <form method="post" action="{{ url_for('stop_scheduler') }}">
-        <button type="submit">Stop scheduler</button>
-      </form>
+  <body>
+    <div class="header">
+      <h1>RAG Control Panel</h1>
+      <div class="header-actions">
+        <div class="theme-toggle">
+          <span class="theme-label" id="theme-label">Light mode</span>
+          <label class="switch" aria-label="Toggle theme">
+            <input type="checkbox" id="theme-switch" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="scheduler-actions">
+          <form method="post" action="{{ url_for('start_scheduler') }}">
+            <button type="submit">Start scheduler</button>
+          </form>
+          <form method="post" action="{{ url_for('stop_scheduler') }}">
+            <button type="submit">Stop scheduler</button>
+          </form>
+        </div>
+      </div>
     </div>
-  </div>
   {% with messages = get_flashed_messages() %}
     {% if messages %}
       {% for msg in messages %}<div class="flash">{{ msg }}</div>{% endfor %}
@@ -166,8 +212,28 @@
     <p>Deletes all Qdrant entries, removes the local state database, clears images in Nextcloud ({{ qdrant_collection }} collection), and optionally restores default environment values.</p>
   </section>
 
-  <script>
-    const searchResults = {{ (search_results or []) | tojson | safe }};
+    <script>
+      const themeSwitch = document.getElementById('theme-switch');
+      const themeLabel = document.getElementById('theme-label');
+
+      const applyTheme = (mode) => {
+        document.body.classList.toggle('dark', mode === 'dark');
+        if (themeLabel) {
+          themeLabel.textContent = mode === 'dark' ? 'Dark mode' : 'Light mode';
+        }
+        localStorage.setItem('theme', mode);
+      };
+
+      const savedTheme = localStorage.getItem('theme') === 'dark' ? 'dark' : 'light';
+      applyTheme(savedTheme);
+      if (themeSwitch) {
+        themeSwitch.checked = savedTheme === 'dark';
+        themeSwitch.addEventListener('change', (event) => {
+          applyTheme(event.target.checked ? 'dark' : 'light');
+        });
+      }
+
+      const searchResults = {{ (search_results or []) | tojson | safe }};
     let groupedResults = [];
     let activeGroup = null;
     let activePointIndex = null;
