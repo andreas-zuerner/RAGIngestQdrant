@@ -396,7 +396,12 @@ class DoclingServeIngestor:
         try:
             with file_path.open("rb") as fp:
                 files = {"files": (file_path.name, fp, "application/octet-stream")}
-                response = requests.post(self.service_url, files=files, timeout=DOCLING_SERVE_TIMEOUT)
+                data = {}
+                if ENABLE_OCR:
+                    data["force_ocr"] = "true"
+                response = requests.post(
+                    self.service_url, files=files, data=data, timeout=DOCLING_SERVE_TIMEOUT
+                )
             response.raise_for_status()
         except requests.HTTPError as exc:
             detail = self._response_detail(exc.response)
@@ -418,9 +423,13 @@ class DoclingServeIngestor:
         try:
             with file_path.open("rb") as fp:
                 files = {"files": (file_path.name, fp, "application/octet-stream")}
+                data = {}
+                if ENABLE_OCR:
+                    data["force_ocr"] = "true"
                 response = requests.post(
                     submit_url,
                     files=files,
+                    data=data,
                     timeout=min(DOCLING_SERVE_TIMEOUT, self.async_timeout),
                 )
             response.raise_for_status()
@@ -452,6 +461,7 @@ class DoclingServeIngestor:
             submission.get("result_url")
             or submission.get("status_url")
             or submission.get("poll_url")
+            or (f"{api_root}/v1/result/{job_id}" if job_id else None)
             or (f"{api_root}/v1/status/poll/{job_id}" if job_id else None)
         )
 
