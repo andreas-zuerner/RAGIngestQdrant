@@ -720,8 +720,16 @@ class DoclingServeIngestor:
                     json.dumps(request_info, indent=2), encoding="utf-8"
                 )
             if chunk_texts:
+                chunk_dump = [
+                    {
+                        "index": idx,
+                        "length": len(text or ""),
+                        "text": text,
+                    }
+                    for idx, text in enumerate(chunk_texts, start=1)
+                ]
                 (debug_dir / "chunks.json").write_text(
-                json.dumps(chunk_texts, indent=2), encoding="utf-8"
+                    json.dumps(chunk_dump, indent=2), encoding="utf-8"
                 )
             if images:
                 image_dir = debug_dir / "images"
