@@ -441,12 +441,20 @@ class DoclingServeIngestor:
             return payload
 
         job_id = submission.get("job_id") or submission.get("task_id") or submission.get("id")
+
+        api_root = self.service_url
+        # alles hinter /v1/convert/... abschneiden
+        m = re.split(r"/v1/convert/.*$", self.service_url, maxsplit=1)
+        if m:
+            api_root = m[0]
+
         poll_url = (
             submission.get("result_url")
             or submission.get("status_url")
             or submission.get("poll_url")
-            or (f"{submit_url.rstrip('/')}/{job_id}" if job_id else None)
+            or (f"{api_root}/v1/status/poll/{job_id}" if job_id else None)
         )
+
         if not poll_url:
             raise RuntimeError("docling-serve async response did not include a poll URL")
 
