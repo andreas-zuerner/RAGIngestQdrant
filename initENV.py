@@ -64,7 +64,6 @@ BRAIN_URL = os.environ.get("BRAIN_URL", "http://192.168.177.151:8080").rstrip("/
 BRAIN_API_KEY = os.environ.get("BRAIN_API_KEY", "change-me")
 BRAIN_COLLECTION = os.environ.get("BRAIN_COLLECTION", "documents")
 BRAIN_CHUNK_TOKENS = env_int("BRAIN_CHUNK_TOKENS", 400)
-BRAIN_OVERLAP_TOKENS = env_int("BRAIN_OVERLAP_TOKENS", 80)
 BRAIN_REQUEST_TIMEOUT = env_float("BRAIN_REQUEST_TIMEOUT", 120)
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://192.168.177.130:11434")
