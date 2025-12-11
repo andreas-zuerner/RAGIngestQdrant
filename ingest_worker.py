@@ -129,7 +129,7 @@ def log(msg):
     print(line, flush=True)
     if DEBUG and _LOGGER is not None:
         try:
-            _LOGGER.info(line)
+            _LOGGER.info(f"[{WORKER_ID}] {msg}")
         except Exception:
             pass
 
