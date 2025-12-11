@@ -3,6 +3,7 @@
 import base64
 import importlib
 import json
+import logging
 import mimetypes
 import re
 import os
@@ -241,13 +242,33 @@ NEXTCLOUD_TOKEN = initENV.NEXTCLOUD_TOKEN
 DECISION_LOG_ENABLED = initENV.DECISION_LOG_ENABLED
 DECISION_LOG_MAX_PER_JOB = initENV.DECISION_LOG_MAX_PER_JOB
 
-WORKER_ID          = f"{os.uname().nodename}-pid{os.getpid()}"
+WORKER_ID = f"{os.uname().nodename}-pid{os.getpid()}"
+
+LOG_PATH = Path("logs") / "scan_scheduler.log"
+
+_LOGGER: Optional[logging.Logger] = None
+if DEBUG:
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _LOGGER = logging.getLogger("ingest_worker")
+        _LOGGER.setLevel(logging.INFO)
+        handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s [worker] [%(name)s] %(message)s"))
+        _LOGGER.addHandler(handler)
+    except Exception:
+        _LOGGER = None
 
 _NEXTCLOUD_CLIENT: NextcloudClient | None = None
 
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] [worker] [{WORKER_ID}] {msg}", flush=True)
+    line = f"[{ts}] [worker] [{WORKER_ID}] {msg}"
+    print(line, flush=True)
+    if DEBUG and _LOGGER is not None:
+        try:
+            _LOGGER.info(line)
+        except Exception:
+            pass
 
 
 def log_debug(msg):
@@ -550,6 +571,11 @@ class DoclingServeIngestor:
         text = self._extract_text(payload)
         base_slug = slugify(file_path.stem)
         effective_debug_dir = debug_dir or Path("logs") / "docling"
+        request_info = {
+            "service_url": self.service_url,
+            "file_name": file_path.name,
+            "file_size": file_path.stat().st_size if file_path.exists() else None,
+        }
 
         text, inline_images = self._extract_inline_images(
             text, base_slug, upload_images=upload_images, debug_dir=effective_debug_dir if debug else None
@@ -569,7 +595,13 @@ class DoclingServeIngestor:
         mime = payload.get("media_type") or payload.get("mime_type")
         chunks = self._chunk_text(text_for_chunks)
         if debug:
-            self._write_debug_dump(base_slug, text_for_chunks, stored_images, effective_debug_dir)
+            self._write_debug_dump(
+                text_for_chunks,
+                stored_images,
+                effective_debug_dir,
+                payload=payload,
+                request_info=request_info,
+            )
         return DoclingExtraction(
             text=text_for_chunks,
             mime_type=mime,
@@ -750,21 +782,32 @@ class DoclingServeIngestor:
 
     def _write_debug_dump(
         self,
-        slug: str,
         text: str,
         images: List[Dict[str, object]],
         debug_dir: Path,
         *,
         chunk_texts: List[str] | None = None,
+        payload: Dict[str, object] | None = None,
+        request_info: Dict[str, object] | None = None,
     ):
         try:
-            doc_dir = ensure_dir(debug_dir / slug)
+            doc_dir = ensure_dir(debug_dir)
             (doc_dir / "extracted.txt").write_text(text or "", encoding="utf-8")
+            if request_info:
+                (doc_dir / "docling_request.json").write_text(
+                    json.dumps(request_info, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            if payload:
+                (doc_dir / "docling_response.json").write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
             if chunk_texts:
                 chunk_lines = []
                 for idx, chunk in enumerate(chunk_texts, start=1):
                     chunk_lines.append(f"### Chunk {idx}\n{chunk}\n")
-                (doc_dir / "chunks.txt").write_text("\n".join(chunk_lines), encoding="utf-8")
+                (doc_dir / "chunks_pre_context.txt").write_text(
+                    "\n".join(chunk_lines), encoding="utf-8"
+                )
 
             if images:
                 image_dir = ensure_dir(doc_dir / "images")
@@ -791,7 +834,7 @@ class DoclingServeIngestor:
                     json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
         except Exception as exc:
-            log(f"[docling_debug_write_failed] slug={slug} err={exc}")
+            log(f"[docling_debug_write_failed] err={exc}")
 
     def _inject_image_refs(self, text: str, images: List[Dict[str, object]]) -> str:
         if not images:
@@ -1204,7 +1247,9 @@ def process_one(conn, job_id, file_id):
     if DEBUG:
         try:
             ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-            debug_dir = ensure_dir(Path("./debug") / f"{ts}_{slugify(p.stem)}")
+            original_name = Path(original_path).name or p.name
+            safe_name = slugify(Path(original_name).stem)
+            debug_dir = ensure_dir(Path("./debug") / f"{ts}_{safe_name}")
         except Exception:
             debug_dir = None
 
@@ -1231,7 +1276,7 @@ def process_one(conn, job_id, file_id):
                 docling_path,
                 upload_images=False,
                 debug=DEBUG,
-                debug_dir=debug_dir / "docling" if debug_dir else None,
+                debug_dir=debug_dir,
             )
         except Exception as e:
             docling_error = e
@@ -1296,11 +1341,9 @@ def process_one(conn, job_id, file_id):
             log_decision(conn, job_id, file_id, "threshold", f"cap: truncated to {MAX_TEXT_CHARS} chars")
 
         doc_dbg_dir: Optional[Path] = None
-        if DEBUG:
-            dbg_root = Path("./debug")
-            dbg_sample = clean[:80]
+        if DEBUG and debug_dir:
             try:
-                doc_dbg_dir = ensure_dir(dbg_root / f"{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}_{slugify((dbg_sample or 'doc'))}")
+                doc_dbg_dir = ensure_dir(debug_dir / "ai_score")
             except Exception:
                 doc_dbg_dir = None
 
@@ -1414,9 +1457,8 @@ def process_one(conn, job_id, file_id):
             pass
 
         if DEBUG:
-            debug_dump_dir = debug_dir / "docling" if debug_dir else Path("logs") / "docling"
+            debug_dump_dir = debug_dir or Path("logs") / "docling"
             ingestor._write_debug_dump(
-                extraction.slug,
                 extraction.text,
                 extraction.images,
                 debug_dump_dir,
