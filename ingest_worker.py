@@ -99,20 +99,21 @@ def _configure_debug_logger() -> Optional[logging.Logger]:
         return None
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        log_path = LOG_PATH.resolve()
         logger = logging.getLogger("ingest_worker")
         # Avoid duplicate handlers if multiple modules configure the same logger
         if not any(
             isinstance(h, logging.FileHandler)
-            and getattr(h, "baseFilename", None) == str(LOG_PATH)
+            and getattr(h, "baseFilename", None) == str(log_path)
             for h in logger.handlers
         ):
             logger.setLevel(logging.INFO)
-            handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+            handler = logging.FileHandler(log_path, encoding="utf-8")
             handler.setFormatter(
                 logging.Formatter("%(asctime)s [worker] [%(name)s] %(message)s")
             )
             logger.addHandler(handler)
-            logger.propagate = False
+        logger.propagate = False
         return logger
     except Exception:
         return None
