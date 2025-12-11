@@ -677,13 +677,6 @@ class DoclingServeIngestor:
                 log(f"[image_store_failed] {target}: {exc}")
                 continue
 
-            if debug_dir:
-                try:
-                    debug_target = ensure_dir(debug_dir / base_slug) / fname
-                    debug_target.write_bytes(raw)
-                except Exception:
-                    log(f"[image_debug_store_failed] base_slug={base_slug} file={fname}")
-
             stored.append(
                 {
                     "label": fname,
