@@ -27,7 +27,6 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
    Relevante Parameter für den Brain-Dienst:
 
    * `BRAIN_CHUNK_TOKENS` – maximale Token-Anzahl pro Chunk (kleiner = kürzere Embedding-Laufzeiten).
-   * `BRAIN_OVERLAP_TOKENS` – Überlappung zwischen zwei Chunks.
    * `BRAIN_REQUEST_TIMEOUT` – Timeout in Sekunden für `POST /ingest/text`.
 
 3. Scanner + Worker mit dem Steuerskript starten:
