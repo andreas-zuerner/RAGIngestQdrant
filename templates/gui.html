@@ -85,6 +85,12 @@
     .detail-header { font-weight: bold; margin-bottom: 6px; }
     .textarea-log { height: 100%; min-height: 360px; flex: 1; }
     .prompt-area textarea { height: 160px; }
+    .delete-dashboard { display: grid; grid-template-columns: 0.4fr 0.6fr; gap: 16px; align-items: start; }
+    @media (max-width: 900px) { .delete-dashboard { grid-template-columns: 1fr; } }
+    .worker-dashboard table { width: 100%; border-collapse: collapse; }
+    .worker-dashboard th, .worker-dashboard td { padding: 8px; border-bottom: 1px solid var(--border); }
+    .worker-dashboard th { text-align: left; color: var(--muted); }
+    .worker-empty { color: var(--muted); margin: 0; }
   </style>
 </head>
   <body>
@@ -160,14 +166,25 @@
     </div>
   </section>
 
-  <section>
-    <h2>Delete by file_id</h2>
-    <form method="post" action="{{ url_for('delete_file') }}">
-      <input type="text" name="file_id" placeholder="file_id" />
-      <button type="submit">Delete</button>
-    </form>
-    <p>Removes Qdrant points, marks the entry in state.db, and deletes matching images in Nextcloud (documents remain unchanged).</p>
-  </section>
+  <div class="delete-dashboard">
+    <section>
+      <h2>Delete by file_id</h2>
+      <form method="post" action="{{ url_for('delete_file') }}">
+        <input type="text" name="file_id" placeholder="file_id" />
+        <button type="submit">Delete</button>
+      </form>
+      <p>Removes Qdrant points, marks the entry in state.db, and deletes matching images in Nextcloud (documents remain unchanged).</p>
+    </section>
+
+    <section class="worker-dashboard">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+        <h2 style="margin: 0;">Ingest workers</h2>
+        <button type="button" id="worker-refresh">Refresh</button>
+      </div>
+      <p class="env-desc" style="margin-top: 8px;">Current running jobs and assigned worker IDs.</p>
+      <div id="worker-status-area"></div>
+    </section>
+  </div>
 
   <section>
     <h2>Environment variables</h2>
@@ -234,6 +251,7 @@
       }
 
       const searchResults = {{ (search_results or []) | tojson | safe }};
+      const workerStatus = {{ (worker_status or []) | tojson | safe }};
     let groupedResults = [];
     let activeGroup = null;
     let activePointIndex = null;
@@ -446,6 +464,56 @@
       const container = document.getElementById('results-area');
       container.innerHTML = '<div class="flash">No results yet.</div>';
     }
+
+    function renderWorkers(data) {
+      const container = document.getElementById('worker-status-area');
+      if (!container) return;
+
+      if (!data || !data.length) {
+        container.innerHTML = '<p class="worker-empty">No running workers detected.</p>';
+        return;
+      }
+
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      thead.innerHTML = '<tr><th>Worker ID</th><th>Job ID</th><th>File ID</th><th>Path</th><th>Locked at</th></tr>';
+      const tbody = document.createElement('tbody');
+
+      data.forEach((item) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${item.worker_id || 'unknown'}</td>
+          <td>${item.job_id || 'n/a'}</td>
+          <td>${item.file_id || 'n/a'}</td>
+          <td>${item.path || ''}</td>
+          <td>${item.locked_at || ''}</td>
+        `;
+        tbody.appendChild(row);
+      });
+
+      table.appendChild(thead);
+      table.appendChild(tbody);
+      container.innerHTML = '';
+      container.appendChild(table);
+    }
+
+    async function refreshWorkers() {
+      try {
+        const res = await fetch('{{ url_for('worker_status') }}');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderWorkers(data.workers || []);
+      } catch (e) {
+        // ignore fetch errors in UI
+      }
+    }
+
+    renderWorkers(workerStatus);
+    const refreshBtn = document.getElementById('worker-refresh');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', refreshWorkers);
+    }
+    setInterval(refreshWorkers, 5000);
 
     async function refreshLog() {
       try {
