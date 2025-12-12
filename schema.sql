@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS files (
   review_reason TEXT,
   next_review_at TEXT,        -- ISO-UTC
   priority INTEGER DEFAULT 100,
+  error_count INTEGER DEFAULT 0,
   inode INTEGER,
   device INTEGER,
   content_hash TEXT,

@@ -91,6 +91,7 @@ def ensure_db(conn: sqlite3.Connection):
         ("device", "ALTER TABLE files ADD COLUMN device INTEGER"),
         ("content_hash", "ALTER TABLE files ADD COLUMN content_hash TEXT"),
         ("deleted_at", "ALTER TABLE files ADD COLUMN deleted_at TEXT"),
+        ("error_count", "ALTER TABLE files ADD COLUMN error_count INTEGER DEFAULT 0"),
     ):
         if not column_exists("files", column):
             conn.execute(ddl)
@@ -118,30 +119,40 @@ def compute_file_id(path: str):
     # stable ID: sha1 of absolute path (lowercased)
     return hashlib.sha1(os.path.abspath(path).lower().encode("utf-8")).hexdigest()
 
-def schedule_next(status: str):
-    """Return a tuple of (reason, days) for the next review window."""
+def schedule_next(status: str, error_count: int = 0):
+    """Return a tuple of (reason, datetime.timedelta) for the next review window."""
 
     normalized = (status or "").lower()
 
+    if normalized.startswith("error"):
+        count = max(1, int(error_count or 0))
+        if count == 1:
+            return ("error→immediate_retry", timedelta())
+        if count == 2:
+            return ("error→retry_24h", timedelta(hours=24))
+        if count == 3:
+            return ("error→retry_7d", timedelta(days=7))
+        if count == 4:
+            return ("error→retry_30d", timedelta(days=30))
+        return ("error→retry_365d", timedelta(days=365))
+
     if normalized == "vectorized":
         days = random.randint(335, 395)  # 11–13 months
-        return ("vectorized→recheck_11-13m", days)
+        return ("vectorized→recheck_11-13m", timedelta(days=days))
 
-    if normalized.startswith("error") or normalized in {
-        "ai_not_relevant",
-        "skipped_too_short",
-    }:
+    if normalized in {"ai_not_relevant", "skipped_too_short"}:
         days = random.randint(25, 30)
-        return (f"{normalized or 'unknown'}→retry_25-30d", days)
+        return (f"{normalized or 'unknown'}→retry_25-30d", timedelta(days=days))
 
     # Fallback: review in roughly one month
     days = random.randint(25, 30)
-    return (f"{normalized or 'unspecified'}→retry_25-30d", days)
+    return (f"{normalized or 'unspecified'}→retry_25-30d", timedelta(days=days))
 
-def compute_next_review_at(status: str):
+
+def compute_next_review_at(status: str, *, error_count: int = 0):
     """Return (timestamp, reason) using SQLite-compatible 'YYYY-MM-DD HH:MM:SS'."""
-    reason, days = schedule_next(status)
-    ts = datetime.now(timezone.utc) + timedelta(days=days)
+    reason, delta = schedule_next(status, error_count=error_count)
+    ts = datetime.now(timezone.utc) + delta
     return ts.strftime("%Y-%m-%d %H:%M:%S"), reason
 
 def is_due(next_review_at: str | None):

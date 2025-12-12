@@ -78,6 +78,7 @@ IDLE_SLEEP_S = initENV.IDLE_SLEEP_S
 PDFTOTEXT_TIMEOUT_S = initENV.PDFTOTEXT_TIMEOUT_S
 PDF_OCR_MAX_PAGES = initENV.PDF_OCR_MAX_PAGES
 PDF_OCR_DPI = initENV.PDF_OCR_DPI
+RETRY_PRIORITY_ERROR = 90
 
 DOCLING_SERVE_URL = initENV.DOCLING_SERVE_URL
 DOCLING_SERVE_TIMEOUT = initENV.DOCLING_SERVE_TIMEOUT
@@ -330,6 +331,21 @@ def cleanup_stale(conn):
         log_decision(conn, None, None, "cleanup", f"freed={freed}")
     return freed
 
+
+def next_error_count(conn, file_id: str) -> int:
+    cur = conn.execute(
+        "SELECT COALESCE(error_count, 0) FROM files WHERE id=?",
+        (file_id,),
+    )
+    row = cur.fetchone()
+    current = 0
+    if row:
+        try:
+            current = int(row[0])
+        except Exception:
+            current = 0
+    return current + 1
+
 def finish_success(conn, job_id, file_id, status: str):
     if file_id:
         next_review_at, review_reason = compute_next_review_at(status)
@@ -342,7 +358,8 @@ def finish_success(conn, job_id, file_id, status: str):
                    next_review_at=?,
                    review_reason=?,
                    should_reingest=0,
-                   updated_at=datetime('now')
+                   updated_at=datetime('now'),
+                   error_count=0
              WHERE id=?;
             """,
             (status, next_review_at, review_reason, file_id),
@@ -364,7 +381,8 @@ def finish_error(conn, job_id, file_id, status: str, msg):
     message = str(msg)[:500]
     log(f"[finish_error] job_id={job_id} file_id={file_id} status={status} message={message}")
     if file_id:
-        next_review_at, review_reason = compute_next_review_at(status)
+        error_count = next_error_count(conn, file_id)
+        next_review_at, review_reason = compute_next_review_at(status, error_count=error_count)
         conn.execute(
             """
             UPDATE files
@@ -373,10 +391,20 @@ def finish_error(conn, job_id, file_id, status: str, msg):
                    last_checked_at=datetime('now'),
                    next_review_at=?,
                    review_reason=?,
-                   updated_at=datetime('now')
+                   updated_at=datetime('now'),
+                   error_count=?,
+                   priority=?
              WHERE id=?;
             """,
-            (status, message, next_review_at, review_reason, file_id),
+            (
+                status,
+                message,
+                next_review_at,
+                review_reason,
+                error_count,
+                RETRY_PRIORITY_ERROR,
+                file_id,
+            ),
         )
     conn.execute(
         "UPDATE jobs SET status='failed', last_error=?, locked_at=NULL WHERE job_id=?",
