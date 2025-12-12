@@ -211,6 +211,12 @@ def should_enqueue(conn, fid):
     if deleted_at:
         return False, "deleted", row
 
+    normalized_status = (str(status).strip().lower() if status is not None else "")
+
+    # Status fehlt bzw. ist "NULL" -> wie Neuprüfung behandeln
+    if not normalized_status or normalized_status == "null":
+        return True, "status_null", row
+
     # 1️⃣  expliziter Reingest
     if should_reingest:
         return True, "should_reingest", row
