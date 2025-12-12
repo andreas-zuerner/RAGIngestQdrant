@@ -346,6 +346,37 @@ def count_queued_jobs(conn) -> int:
         except Exception:
             return 0
 
+
+def fail_running_jobs(conn, reason: str = "scheduler_stopped") -> int:
+    rows = conn.execute(
+        "SELECT job_id, file_id FROM jobs WHERE status='running';"
+    ).fetchall()
+    failed = 0
+    for row in rows:
+        job_id = row_get(row, "job_id")
+        file_id = row_get(row, "file_id")
+        conn.execute(
+            """
+            UPDATE jobs
+               SET status='failed',
+                   last_error=?,
+                   locked_at=NULL,
+                   worker_id=NULL
+             WHERE job_id=?
+            """,
+            (reason, job_id),
+        )
+        conn.execute(
+            "INSERT INTO decision_log(step, job_id, file_id, detail) VALUES(?,?,?,?)",
+            ("error", job_id, file_id, reason),
+        )
+        failed += 1
+
+    if failed:
+        conn.commit()
+
+    return failed
+
 def main():
     conn = init_conn(DB_PATH)
     worker_procs: list[subprocess.Popen] = []
@@ -436,6 +467,9 @@ def main():
         log_scan("interrupted, stopping...")
     finally:
         stop_workers()
+        failed_jobs = fail_running_jobs(conn, "failed_due_to_scheduler_stop")
+        if failed_jobs:
+            log_scan(f"marked {failed_jobs} running jobs as failed after stop")
         try:
             conn.close()
         except Exception:
