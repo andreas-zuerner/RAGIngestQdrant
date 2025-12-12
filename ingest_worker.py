@@ -8,8 +8,11 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -92,6 +95,65 @@ WORKER_ID = f"{os.uname().nodename}-pid{os.getpid()}"
 LOG_PATH = Path("logs") / "scan_scheduler.log"
 
 _LOGGER: Optional[logging.Logger] = None
+
+
+@dataclass
+class DoclingAsyncTaskState:
+    task_id: str
+    file_name: str
+    start_time: float
+    deadline: float
+    attempts: int = 0
+    last_error: Exception | None = None
+    next_interval: float = 0.0
+
+
+class DoclingAsyncManager:
+    def __init__(self, max_parallel: int = 5):
+        self.max_parallel = max_parallel
+        self._semaphore = threading.Semaphore(max_parallel)
+        self._lock = threading.Lock()
+        self._active: Dict[str, DoclingAsyncTaskState] = {}
+        self._queued: List[DoclingAsyncTaskState] = []
+
+    @contextmanager
+    def slot(self, file_name: str, deadline: float, initial_interval: float):
+        state = DoclingAsyncTaskState(
+            task_id=f"{file_name}-{time.time_ns()}",
+            file_name=file_name,
+            start_time=time.time(),
+            deadline=deadline,
+            next_interval=initial_interval,
+        )
+        with self._lock:
+            self._queued.append(state)
+            queued_names = [s.file_name for s in self._queued]
+        log_debug(
+            f"[docling_async_queue] queued={queued_names} active={len(self._active)} limit={self.max_parallel}"
+        )
+
+        self._semaphore.acquire()
+        with self._lock:
+            self._queued = [s for s in self._queued if s.task_id != state.task_id]
+            self._active[state.task_id] = state
+            active = len(self._active)
+        log_debug(
+            f"[docling_async_slot_acquired] task_id={state.task_id} file={file_name} "
+            f"active={active} limit={self.max_parallel}"
+        )
+        try:
+            yield state
+        finally:
+            with self._lock:
+                self._active.pop(state.task_id, None)
+                active = len(self._active)
+            self._semaphore.release()
+            log_debug(
+                f"[docling_async_slot_released] task_id={state.task_id} file={file_name} active={active}"
+            )
+
+
+_DOC_EXTRACTION_MANAGER = DoclingAsyncManager(max_parallel=5)
 
 
 def _configure_debug_logger() -> Optional[logging.Logger]:
@@ -671,6 +733,7 @@ def process_one(conn, job_id, file_id):
                 job_id=job_id,
                 file_id=file_id,
                 original_path=original_path,
+                async_slot_provider=_DOC_EXTRACTION_MANAGER.slot,
             )
             extraction = extraction_outcome.extraction
             ingestor = extraction_outcome.ingestor
