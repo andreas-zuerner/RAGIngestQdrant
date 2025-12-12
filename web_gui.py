@@ -193,6 +193,83 @@ def load_worker_status() -> List[Dict[str, Optional[str]]]:
         conn.close()
 
 
+def load_pipeline_overview() -> Dict[str, List[Dict[str, Optional[str]]]]:
+    if not DB_PATH.exists():
+        return {"queued": [], "docling": [], "extracted": [], "pipeline": []}
+
+    conn = init_conn(DB_PATH)
+    try:
+        queued = [
+            _dict_from_row(r)
+            for r in conn.execute(
+                """
+                SELECT jobs.job_id, jobs.file_id, files.path, jobs.enqueue_at
+                  FROM jobs
+                  JOIN files ON files.id = jobs.file_id
+                 WHERE jobs.status='queued'
+                 ORDER BY jobs.enqueue_at
+                """
+            ).fetchall()
+        ]
+
+        running = conn.execute(
+            """
+            SELECT jobs.job_id, jobs.file_id, jobs.worker_id, files.path
+              FROM jobs
+              JOIN files ON files.id = jobs.file_id
+             WHERE jobs.status='running'
+            """
+        ).fetchall()
+
+        def latest_step(job_id: str) -> str:
+            row = conn.execute(
+                "SELECT step FROM decision_log WHERE job_id=? ORDER BY id DESC LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            if isinstance(row, dict):
+                return row.get("step") or ""
+            if row:
+                try:
+                    return row[0]
+                except Exception:
+                    return ""
+            return ""
+
+        docling, extracted, pipeline = [], [], []
+        for row in running:
+            data = _dict_from_row(row)
+            step = latest_step(data.get("job_id")) if data else ""
+            entry = data or {}
+            entry["stage"] = step or "running"
+            if step.startswith("docling"):
+                docling.append(entry)
+            elif step == "extraction_complete":
+                extracted.append(entry)
+            else:
+                stage_label = "relevance"
+                if step == "stage_chunking":
+                    stage_label = "chunking"
+                elif step == "stage_context":
+                    stage_label = "context"
+                elif step == "stage_embedding":
+                    stage_label = "embedding"
+                elif step == "stage_relevance":
+                    stage_label = "relevance"
+                elif step == "pipeline_start":
+                    stage_label = "pipeline"
+                entry["stage_label"] = stage_label
+                pipeline.append(entry)
+
+        return {
+            "queued": queued,
+            "docling": docling,
+            "extracted": extracted,
+            "pipeline": pipeline,
+        }
+    finally:
+        conn.close()
+
+
 def _brain_headers() -> Dict[str, str]:
     headers: Dict[str, str] = {}
     if BRAIN_API_KEY:
@@ -397,7 +474,8 @@ def render_gui(**extra):
         qdrant_collection=BRAIN_COLLECTION,
         prompts=read_prompts(),
         worker_status=load_worker_status(),
-        max_workers=current_env().get("MAX_WORKERS") or initENV.MAX_WORKERS,
+        pipeline_overview=load_pipeline_overview(),
+        max_workers=current_env().get("MAX_WORKERS") or initENV.DOCLING_MAX_WORKERS,
     )
     base.update(extra)
     return render_template("gui.html", **base)

@@ -23,7 +23,8 @@ SLEEP_SECS = initENV.SLEEP_SECS
 WORKER_STOP_TIMEOUT = initENV.WORKER_STOP_TIMEOUT
 NEXTCLOUD_BASE_URL = initENV.NEXTCLOUD_BASE_URL
 NEXTCLOUD_USER = initENV.NEXTCLOUD_USER
-MAX_WORKERS = initENV.MAX_WORKERS
+DOCLING_MAX_WORKERS = initENV.DOCLING_MAX_WORKERS
+PIPELINE_WORKERS = initENV.PIPELINE_WORKERS
 SCAN_ROOTS = (NEXTCLOUD_DOC_DIR,)
 
 HIGH_PRIORITY_NEW = 100
@@ -461,7 +462,7 @@ def main():
 
             # Keep starting new workers whenever the amount of active work dips below
             # the configured cap, as long as there is something queued to process.
-            desired_workers = min(MAX_WORKERS, running_jobs + queued)
+            desired_workers = min(PIPELINE_WORKERS, running_jobs + queued)
             running_workers = sum(1 for p in worker_procs if worker_running(p))
 
             if desired_workers > running_workers:
