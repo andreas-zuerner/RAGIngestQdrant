@@ -978,11 +978,39 @@ def process_one(conn, job_id, file_id, stage: ExtractionStageResult | None = Non
         return
     run_post_extraction_pipeline(conn, active_stage)
 
+
+def _start_pipeline(pipeline_executor: ThreadPoolExecutor, stage: ExtractionStageResult):
+    def _pipeline_task():
+        local_conn = create_db_conn()
+        try:
+            log(f"[pipeline_start] job_id={stage.job_id} file_id={stage.file_id}")
+            try:
+                log_decision(
+                    local_conn,
+                    stage.job_id,
+                    stage.file_id,
+                    "pipeline_start",
+                    "starting relevance->embedding",
+                )
+            except Exception:
+                pass
+            process_one(local_conn, stage.job_id, stage.file_id, stage)
+        finally:
+            try:
+                local_conn.close()
+            except Exception:
+                pass
+
+    return pipeline_executor.submit(_pipeline_task)
+
+
 def main():
     conn = create_db_conn()
     executor = ThreadPoolExecutor(max_workers=DOCLING_MAX_WORKERS)
+    pipeline_executor = ThreadPoolExecutor(max_workers=1)
     futures: dict[Future, tuple[str, str]] = {}
     ready: list[ExtractionStageResult] = []
+    pipeline_future: Future | None = None
 
     def submit_if_slot_available():
         while len(futures) < DOCLING_MAX_WORKERS:
@@ -1022,28 +1050,31 @@ def main():
                 except Exception as exc:
                     log(f"[docling_task_error] job={job_meta} err={exc}")
 
-            if ready:
-                stage = ready.pop(0)
-                log(f"[pipeline_start] job_id={stage.job_id} file_id={stage.file_id} queued={len(ready)}")
+            if pipeline_future and pipeline_future.done():
                 try:
-                    log_decision(conn, stage.job_id, stage.file_id, "pipeline_start", "starting relevance->embedding")
-                except Exception:
-                    pass
-                process_one(conn, stage.job_id, stage.file_id, stage)
+                    pipeline_future.result()
+                except Exception as exc:
+                    log(f"[pipeline_task_error] err={exc}")
+                pipeline_future = None
+
+            if pipeline_future is None and ready:
+                stage = ready.pop(0)
+                pipeline_future = _start_pipeline(pipeline_executor, stage)
                 continue
 
-            if futures:
+            if futures or ready or pipeline_future:
                 time.sleep(IDLE_SLEEP_S)
                 continue
 
             submit_if_slot_available()
-            if not futures and not ready:
+            if not futures and not ready and pipeline_future is None:
                 log("no queued jobs found - shutting down")
                 break
     except KeyboardInterrupt:
         log("stopping...")
     finally:
         executor.shutdown(wait=False)
+        pipeline_executor.shutdown(wait=False)
         try:
             conn.close()
         except Exception:
