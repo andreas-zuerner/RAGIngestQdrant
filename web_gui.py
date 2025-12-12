@@ -397,6 +397,7 @@ def render_gui(**extra):
         qdrant_collection=BRAIN_COLLECTION,
         prompts=read_prompts(),
         worker_status=load_worker_status(),
+        max_workers=current_env().get("MAX_WORKERS") or initENV.MAX_WORKERS,
     )
     base.update(extra)
     return render_template("gui.html", **base)
