@@ -334,20 +334,33 @@ def sync_and_enqueue(conn):
     conn.commit()
     return added, enq, removed
 
-def count_queued_jobs(conn) -> int:
-    row = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='queued';").fetchone()
-    if not row:
-        return 0
-    try:
-        return int(row[0])
-    except (KeyError, TypeError, ValueError):
-        try:
-            return int(row["COUNT(*)"])
-        except Exception:
-            return 0
+  def count_queued_jobs(conn) -> int:
+      row = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='queued';").fetchone()
+      if not row:
+          return 0
+      try:
+          return int(row[0])
+      except (KeyError, TypeError, ValueError):
+          try:
+              return int(row["COUNT(*)"])
+          except Exception:
+              return 0
 
 
-def fail_running_jobs(conn, reason: str = "scheduler_stopped") -> int:
+  def count_running_jobs(conn) -> int:
+      row = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='running';").fetchone()
+      if not row:
+          return 0
+      try:
+          return int(row[0])
+      except (KeyError, TypeError, ValueError):
+          try:
+              return int(row["COUNT(*)"])
+          except Exception:
+              return 0
+
+
+  def fail_running_jobs(conn, reason: str = "scheduler_stopped") -> int:
     rows = conn.execute(
         "SELECT job_id, file_id FROM jobs WHERE status='running';"
     ).fetchall()
@@ -441,9 +454,12 @@ def main():
 
             n, e, d = sync_and_enqueue(conn)
             queued = count_queued_jobs(conn)
-            log_scan(f"synced={n} enqueued={e} pruned={d} queued={queued}")
+            running_jobs = count_running_jobs(conn)
+            log_scan(
+                f"synced={n} enqueued={e} pruned={d} queued={queued} running={running_jobs}"
+            )
 
-            desired_workers = min(MAX_WORKERS, queued) if queued > 0 else 0
+            desired_workers = min(MAX_WORKERS, max(queued, running_jobs))
             running_workers = sum(1 for p in worker_procs if worker_running(p))
 
             if desired_workers > running_workers:
