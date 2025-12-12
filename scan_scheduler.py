@@ -23,6 +23,7 @@ SLEEP_SECS = initENV.SLEEP_SECS
 WORKER_STOP_TIMEOUT = initENV.WORKER_STOP_TIMEOUT
 NEXTCLOUD_BASE_URL = initENV.NEXTCLOUD_BASE_URL
 NEXTCLOUD_USER = initENV.NEXTCLOUD_USER
+MAX_WORKERS = initENV.MAX_WORKERS
 SCAN_ROOTS = (NEXTCLOUD_DOC_DIR,)
 
 HIGH_PRIORITY_NEW = 100
@@ -341,7 +342,7 @@ def count_queued_jobs(conn) -> int:
 
 def main():
     conn = init_conn(DB_PATH)
-    worker_proc: subprocess.Popen | None = None
+    worker_procs: list[subprocess.Popen] = []
     stop_requested = False
 
     def handle_stop(signum, frame):
@@ -351,38 +352,47 @@ def main():
     signal.signal(signal.SIGINT, handle_stop)
     signal.signal(signal.SIGTERM, handle_stop)
 
-    def worker_running() -> bool:
-        return worker_proc is not None and worker_proc.poll() is None
+    def worker_running(proc: subprocess.Popen | None) -> bool:
+        return proc is not None and proc.poll() is None
+
+    def prune_workers():
+        nonlocal worker_procs
+        alive: list[subprocess.Popen] = []
+        for proc in worker_procs:
+            if worker_running(proc):
+                alive.append(proc)
+            else:
+                rc = proc.returncode if proc else None
+                log_scan(f"worker exited with code {rc}")
+        worker_procs = alive
 
     def start_worker():
-        nonlocal worker_proc
-        if worker_running():
-            return
         cmd = [sys.executable, str(WORKER_SCRIPT)]
         log_scan(f"starting worker: {' '.join(cmd)}")
         try:
-            worker_proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT))
+            proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT))
+            worker_procs.append(proc)
         except Exception as exc:
             log_scan(f"failed to start worker: {exc}")
-            worker_proc = None
+            return False
+        return True
 
-    def stop_worker():
-        nonlocal worker_proc
-        if not worker_proc:
-            return
-        if worker_proc.poll() is not None:
-            worker_proc = None
-            return
-        log_scan("stopping worker...")
-        worker_proc.terminate()
-        try:
-            worker_proc.wait(timeout=WORKER_STOP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            log_scan("worker did not exit in time - killing")
-            worker_proc.kill()
-            worker_proc.wait()
-        finally:
-            worker_proc = None
+    def stop_workers(limit: int | None = None):
+        nonlocal worker_procs
+        targets = worker_procs if limit is None else worker_procs[:limit]
+        remaining = worker_procs if limit is None else worker_procs[limit:]
+        for proc in targets:
+            if not worker_running(proc):
+                continue
+            log_scan("stopping worker...")
+            proc.terminate()
+            try:
+                proc.wait(timeout=WORKER_STOP_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                log_scan("worker did not exit in time - killing")
+                proc.kill()
+                proc.wait()
+        worker_procs = [p for p in remaining if worker_running(p)]
 
     log_scan(
         f"DB={DB_PATH} roots={SCAN_ROOTS} sleep={SLEEP_SECS}s max_jobs={MAX_JOBS_PER_PASS}"
@@ -390,17 +400,22 @@ def main():
     write_pid_file()
     try:
         while not stop_requested:
-            if worker_proc and worker_proc.poll() is not None:
-                rc = worker_proc.returncode
-                log_scan(f"worker exited with code {rc}")
-                worker_proc = None
+            prune_workers()
 
             n, e, d = sync_and_enqueue(conn)
             queued = count_queued_jobs(conn)
             log_scan(f"synced={n} enqueued={e} pruned={d} queued={queued}")
 
-            if queued and not worker_running():
-                start_worker()
+            desired_workers = min(MAX_WORKERS, queued) if queued > 0 else 0
+            running_workers = sum(1 for p in worker_procs if worker_running(p))
+
+            if desired_workers > running_workers:
+                to_start = desired_workers - running_workers
+                for _ in range(to_start):
+                    if not start_worker():
+                        break
+            elif desired_workers < running_workers:
+                stop_workers(running_workers - desired_workers)
 
             if stop_requested:
                 break
@@ -414,7 +429,7 @@ def main():
     except KeyboardInterrupt:
         log_scan("interrupted, stopping...")
     finally:
-        stop_worker()
+        stop_workers()
         try:
             conn.close()
         except Exception:

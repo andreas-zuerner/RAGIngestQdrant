@@ -172,7 +172,10 @@ def _configure_debug_logger() -> Optional[logging.Logger]:
             logger.setLevel(logging.INFO)
             handler = logging.FileHandler(log_path, encoding="utf-8")
             handler.setFormatter(
-                logging.Formatter("%(asctime)s [worker] [%(name)s] %(message)s")
+                logging.Formatter(
+                    "%(asctime)s [worker] [%(name)s] %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
             )
             logger.addHandler(handler)
         logger.propagate = False
