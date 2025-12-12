@@ -483,7 +483,7 @@ class DoclingServeIngestor:
             if not poll_url:
                 raise RuntimeError("docling-serve async response did not include a poll URL")
 
-            max_interval = self.async_timeout * 0.3
+            max_interval = min(self.async_timeout * 0.3, 300)
             next_interval = self.poll_interval
             last_error: Exception | None = None
 
@@ -491,7 +491,7 @@ class DoclingServeIngestor:
                 now = time.time()
                 # Ensure the very first poll respects the configured poll interval
                 sleep_for = 0 if now > deadline else next_interval
-                # Cap the backoff once 30% of the timeout is reached
+                # Cap the backoff once 30% of the timeout is reached, but never exceed 300s
                 if sleep_for > max_interval and max_interval > 0:
                     sleep_for = max_interval
                 if sleep_for > 0:

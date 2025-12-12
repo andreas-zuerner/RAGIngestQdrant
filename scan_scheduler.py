@@ -459,7 +459,9 @@ def main():
                 f"synced={n} enqueued={e} pruned={d} queued={queued} running={running_jobs}"
             )
 
-            desired_workers = min(MAX_WORKERS, max(queued, running_jobs))
+            # Keep starting new workers whenever the amount of active work dips below
+            # the configured cap, as long as there is something queued to process.
+            desired_workers = min(MAX_WORKERS, running_jobs + queued)
             running_workers = sum(1 for p in worker_procs if worker_running(p))
 
             if desired_workers > running_workers:
