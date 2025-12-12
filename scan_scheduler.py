@@ -334,33 +334,33 @@ def sync_and_enqueue(conn):
     conn.commit()
     return added, enq, removed
 
-  def count_queued_jobs(conn) -> int:
-      row = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='queued';").fetchone()
-      if not row:
-          return 0
-      try:
-          return int(row[0])
-      except (KeyError, TypeError, ValueError):
-          try:
-              return int(row["COUNT(*)"])
-          except Exception:
-              return 0
+def count_queued_jobs(conn) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='queued';").fetchone()
+    if not row:
+        return 0
+    try:
+        return int(row[0])
+    except (KeyError, TypeError, ValueError):
+        try:
+            return int(row["COUNT(*)"])
+        except Exception:
+            return 0
 
 
-  def count_running_jobs(conn) -> int:
-      row = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='running';").fetchone()
-      if not row:
-          return 0
-      try:
-          return int(row[0])
-      except (KeyError, TypeError, ValueError):
-          try:
-              return int(row["COUNT(*)"])
-          except Exception:
-              return 0
+def count_running_jobs(conn) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='running';").fetchone()
+    if not row:
+        return 0
+    try:
+        return int(row[0])
+    except (KeyError, TypeError, ValueError):
+        try:
+            return int(row["COUNT(*)"])
+        except Exception:
+            return 0
 
 
-  def fail_running_jobs(conn, reason: str = "scheduler_stopped") -> int:
+def fail_running_jobs(conn, reason: str = "scheduler_stopped") -> int:
     rows = conn.execute(
         "SELECT job_id, file_id FROM jobs WHERE status='running';"
     ).fetchall()
