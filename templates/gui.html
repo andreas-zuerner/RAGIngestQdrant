@@ -599,6 +599,11 @@
       }
     }
     setInterval(refreshLog, 4000);
+
+    // Refresh the full dashboard periodically to keep pipeline status up to date
+    setInterval(() => {
+      window.location.reload();
+    }, 10000);
   </script>
 </body>
 </html>
