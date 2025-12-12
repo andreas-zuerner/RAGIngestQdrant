@@ -24,6 +24,13 @@ class ChunkItem:
     debug: Optional[Dict[str, Any]] = None
 
 
+@dataclass
+class ContextChunk:
+    text: str
+    meta: Dict[str, Any]
+    error: Optional[str] = None
+
+
 def _extract_image_refs(text: str) -> List[str]:
     """Parse the chunk text and return unique inline image markers like `[IMAGE:name]`."""
     if not text or not isinstance(text, str):
@@ -209,7 +216,7 @@ def enrich_chunks_with_context(
     model: str,
     timeout: float = 120.0,
     debug: Optional[Any] = None,
-) -> List[str]:
+) -> List[ContextChunk]:
     """Convenience wrapper to enrich plain chunk strings with generated context."""
     items = [
         {
@@ -224,4 +231,15 @@ def enrich_chunks_with_context(
     ]
 
     enriched_items = add_context_to_chunks(items, ollama_host=ollama_host, model=model, timeout=timeout, debug=debug)
-    return [item.get("text", "") for item in enriched_items]
+    context_chunks: List[ContextChunk] = []
+    for item in enriched_items:
+        meta = item.get("meta") or {}
+        context_chunks.append(
+            ContextChunk(
+                text=item.get("text", ""),
+                meta=meta,
+                error=meta.get("context_error"),
+            )
+        )
+
+    return context_chunks

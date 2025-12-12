@@ -886,7 +886,8 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     log(f"[add_context_start] job_id={job_id} file_id={file_id} chunks={len(chunk_texts)}")
     log_decision(conn, job_id, file_id, "stage_context", "adding context")
     chunks = enrich_chunks_with_context(
-        chunk_texts,
+        document=clean,
+        chunks=chunk_texts,
         ollama_host=OLLAMA_HOST,
         model=OLLAMA_MODEL_CONTEXT,
         timeout=BRAIN_REQUEST_TIMEOUT,
