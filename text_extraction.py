@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from contextlib import contextmanager, nullcontext
 
 import requests
 from nextcloud_client import NextcloudClient, env_client
@@ -227,7 +228,6 @@ _LOGGER = _configure_debug_logger()
 
 WORKER_ID = f"{os.uname().nodename}-pid{os.getpid()}"
 
-
 def log(msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] [worker] [{WORKER_ID}] {msg}"
@@ -265,6 +265,17 @@ class DoclingExtraction:
     chunks: List[DoclingChunk]
     images: List[Dict[str, object]]
     slug: str
+
+
+@dataclass
+class DoclingAsyncTaskState:
+    task_id: str
+    file_name: str
+    start_time: float
+    deadline: float
+    attempts: int = 0
+    last_error: Exception | None = None
+    next_interval: float = 0.0
 
 
 @dataclass
@@ -312,6 +323,7 @@ class DoclingServeIngestor:
         async_enabled: bool = False,
         async_timeout: float = 900.0,
         poll_interval: float = 5.0,
+        async_slot_provider=None,
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -321,6 +333,7 @@ class DoclingServeIngestor:
         self.async_enabled = async_enabled
         self.async_timeout = async_timeout
         self.poll_interval = poll_interval
+        self.async_slot_provider = async_slot_provider
         self.image_dir = ensure_dir(Path(image_dir)) if nextcloud_client is None else Path(image_dir)
         self.nextcloud_client = nextcloud_client
         self.remote_image_dir = remote_image_dir or str(image_dir)
@@ -420,92 +433,124 @@ class DoclingServeIngestor:
     def _extract_async(self, file_path: Path) -> Dict[str, object]:
         submit_url = self.async_url or self._derive_async_url(self.service_url)
         start = time.time()
-        try:
-            with file_path.open("rb") as fp:
-                files = {"files": (file_path.name, fp, "application/octet-stream")}
-                data = {}
-                if ENABLE_OCR:
-                    data["force_ocr"] = "true"
-                response = requests.post(
-                    submit_url,
-                    files=files,
-                    data=data,
-                    timeout=min(DOCLING_SERVE_TIMEOUT, self.async_timeout),
-                )
-            response.raise_for_status()
-        except requests.HTTPError as exc:
-            detail = self._response_detail(exc.response)
-            suffix = f"; {detail}" if detail else ""
-            raise DoclingUnavailableError(f"docling-serve async submit failed: {exc}{suffix}") from exc
-        except Exception as exc:
-            raise DoclingUnavailableError(f"docling-serve async submit failed: {exc}") from exc
-
-        try:
-            submission = response.json()
-        except Exception as exc:
-            raise RuntimeError("docling-serve async submit returned invalid JSON") from exc
-
-        payload = self._maybe_extract_payload(submission)
-        if payload:
-            return payload
-
-        job_id = submission.get("job_id") or submission.get("task_id") or submission.get("id")
-
-        api_root = self.service_url
-        # alles hinter /v1/convert/... abschneiden
-        m = re.split(r"/v1/convert/.*$", self.service_url, maxsplit=1)
-        if m:
-            api_root = m[0]
-
-        poll_url = (
-            submission.get("result_url")
-            or submission.get("status_url")
-            or submission.get("poll_url")
-            or (f"{api_root}/v1/result/{job_id}" if job_id else None)
-            or (f"{api_root}/v1/status/poll/{job_id}" if job_id else None)
-        )
-
-        if not poll_url:
-            raise RuntimeError("docling-serve async response did not include a poll URL")
-
         deadline = start + self.async_timeout
-        attempts = 0
-        last_error: Exception | None = None
-        while time.time() < deadline:
-            attempts += 1
+        with self._acquire_async_slot(file_path.name, deadline) as task_state:
             try:
-                poll_response = requests.get(poll_url, timeout=DOCLING_SERVE_TIMEOUT)
-                poll_response.raise_for_status()
+                with file_path.open("rb") as fp:
+                    files = {"files": (file_path.name, fp, "application/octet-stream")}
+                    data = {}
+                    if ENABLE_OCR:
+                        data["force_ocr"] = "true"
+                    response = requests.post(
+                        submit_url,
+                        files=files,
+                        data=data,
+                        timeout=min(DOCLING_SERVE_TIMEOUT, self.async_timeout),
+                    )
+                response.raise_for_status()
+            except requests.HTTPError as exc:
+                detail = self._response_detail(exc.response)
+                suffix = f"; {detail}" if detail else ""
+                raise DoclingUnavailableError(f"docling-serve async submit failed: {exc}{suffix}") from exc
             except Exception as exc:
-                last_error = exc
-                log_debug(
-                    f"[docling_async_poll_retry] url={poll_url} attempts={attempts} "
-                    f"err={exc}"
-                )
-                time.sleep(self.poll_interval)
-                continue
+                raise DoclingUnavailableError(f"docling-serve async submit failed: {exc}") from exc
 
             try:
-                poll_data = poll_response.json()
+                submission = response.json()
             except Exception as exc:
-                raise RuntimeError("docling-serve async poll returned invalid JSON") from exc
+                raise RuntimeError("docling-serve async submit returned invalid JSON") from exc
 
-            payload = self._maybe_extract_payload(poll_data)
+            payload = self._maybe_extract_payload(submission)
             if payload:
                 return payload
 
-            status = str(poll_data.get("status") or poll_data.get("state") or "").lower()
-            if status in {"failed", "error"}:
-                detail = poll_data.get("detail") or poll_data.get("message")
-                suffix = f"; {detail}" if detail else ""
-                raise DoclingUnavailableError(f"docling-serve async failed{suffix}")
+            job_id = submission.get("job_id") or submission.get("task_id") or submission.get("id")
 
-            time.sleep(self.poll_interval)
+            api_root = self.service_url
+            # alles hinter /v1/convert/... abschneiden
+            m = re.split(r"/v1/convert/.*$", self.service_url, maxsplit=1)
+            if m:
+                api_root = m[0]
 
-        suffix = f"; last_error={last_error}" if last_error else ""
-        raise DoclingUnavailableError(
-            f"docling-serve async timed out after {self.async_timeout}s while polling {poll_url}{suffix}"
-        )
+            poll_url = (
+                submission.get("result_url")
+                or submission.get("status_url")
+                or submission.get("poll_url")
+                or (f"{api_root}/v1/result/{job_id}" if job_id else None)
+                or (f"{api_root}/v1/status/poll/{job_id}" if job_id else None)
+            )
+
+            if not poll_url:
+                raise RuntimeError("docling-serve async response did not include a poll URL")
+
+            max_interval = self.async_timeout * 0.3
+            next_interval = self.poll_interval
+            last_error: Exception | None = None
+
+            while True:
+                now = time.time()
+                # Ensure the very first poll respects the configured poll interval
+                sleep_for = 0 if now > deadline else next_interval
+                # Cap the backoff once 30% of the timeout is reached
+                if sleep_for > max_interval and max_interval > 0:
+                    sleep_for = max_interval
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+
+                task_state.attempts += 1
+                try:
+                    poll_response = requests.get(poll_url, timeout=DOCLING_SERVE_TIMEOUT)
+                    poll_response.raise_for_status()
+                except Exception as exc:
+                    last_error = exc
+                    task_state.last_error = exc
+                    log_debug(
+                        f"[docling_async_poll_retry] url={poll_url} attempts={task_state.attempts} "
+                        f"err={exc}"
+                    )
+                else:
+                    try:
+                        poll_data = poll_response.json()
+                    except Exception as exc:
+                        raise RuntimeError("docling-serve async poll returned invalid JSON") from exc
+
+                    payload = self._maybe_extract_payload(poll_data)
+                    if payload:
+                        return payload
+
+                    status = str(poll_data.get("status") or poll_data.get("state") or "").lower()
+                    if status in {"failed", "error"}:
+                        detail = poll_data.get("detail") or poll_data.get("message")
+                        suffix = f"; {detail}" if detail else ""
+                        raise DoclingUnavailableError(f"docling-serve async failed{suffix}")
+
+                if time.time() > deadline:
+                    break
+
+                next_interval = min(next_interval * 2, max_interval if max_interval > 0 else next_interval)
+                task_state.next_interval = next_interval
+
+            suffix = f"; last_error={last_error}" if last_error else ""
+            raise DoclingUnavailableError(
+                f"docling-serve async timed out after {self.async_timeout}s while polling {poll_url}{suffix}"
+            )
+
+    @contextmanager
+    def _acquire_async_slot(self, file_name: str, deadline: float):
+        if self.async_slot_provider is None:
+            default_state = DoclingAsyncTaskState(
+                task_id=f"{file_name}-{time.time_ns()}",
+                file_name=file_name,
+                start_time=time.time(),
+                deadline=deadline,
+                next_interval=self.poll_interval,
+            )
+            with nullcontext(default_state) as state:
+                yield state
+            return
+
+        with self.async_slot_provider(file_name, deadline, self.poll_interval) as state:
+            yield state
 
     def _maybe_extract_payload(self, payload: Dict[str, object]) -> Optional[Dict[str, object]]:
         if not isinstance(payload, dict):
@@ -784,7 +829,7 @@ class DoclingServeIngestor:
                 log(f"[image_upload_failed] {img['label']}: {exc}")
 
 
-def get_docling_ingestor() -> DoclingServeIngestor:
+def get_docling_ingestor(async_slot_provider=None) -> DoclingServeIngestor:
     async_url = initENV.DOCLING_SERVE_ASYNC_URL or None
     if not async_url and initENV.DOCLING_SERVE_USE_ASYNC:
         async_url = None  # derive from service_url
@@ -806,6 +851,7 @@ def get_docling_ingestor() -> DoclingServeIngestor:
         async_enabled=initENV.DOCLING_SERVE_USE_ASYNC,
         async_timeout=initENV.DOCLING_SERVE_ASYNC_TIMEOUT,
         poll_interval=initENV.DOCLING_SERVE_ASYNC_POLL_INTERVAL,
+        async_slot_provider=async_slot_provider,
     )
 
 
@@ -815,6 +861,7 @@ def extract_document(
     job_id: str,
     file_id: str,
     original_path: str | None = None,
+    async_slot_provider=None,
 ) -> ExtractionOutcome:
     p = Path(file_path)
     if not p.exists():
@@ -841,7 +888,7 @@ def extract_document(
     try:
         size = docling_path.stat().st_size
         log(f"[extract_start] job_id={job_id} file_id={file_id} path={docling_path} size={size} original={p}")
-        ingestor = get_docling_ingestor()
+        ingestor = get_docling_ingestor(async_slot_provider=async_slot_provider)
 
         extraction: Optional[DoclingExtraction] = None
         docling_error: Optional[Exception] = None
