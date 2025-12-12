@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, Future
 
 import requests
 from nextcloud_client import env_client, NextcloudClient, NextcloudError
@@ -82,6 +83,7 @@ RETRY_PRIORITY_ERROR = 90
 
 DOCLING_SERVE_URL = initENV.DOCLING_SERVE_URL
 DOCLING_SERVE_TIMEOUT = initENV.DOCLING_SERVE_TIMEOUT
+DOCLING_MAX_WORKERS = initENV.DOCLING_MAX_WORKERS
 NEXTCLOUD_DOC_DIR = initENV.NEXTCLOUD_DOC_DIR
 NEXTCLOUD_IMAGE_DIR = initENV.NEXTCLOUD_IMAGE_DIR
 NEXTCLOUD_BASE_URL = initENV.NEXTCLOUD_BASE_URL
@@ -107,6 +109,15 @@ class DoclingAsyncTaskState:
     attempts: int = 0
     last_error: Exception | None = None
     next_interval: float = 0.0
+
+
+@dataclass
+class ExtractionStageResult:
+    job_id: str
+    file_id: str
+    extraction_outcome: ExtractionOutcome
+    clean_text: str
+    doc_dbg_dir: Path | None
 
 
 class DoclingAsyncManager:
@@ -154,7 +165,7 @@ class DoclingAsyncManager:
             )
 
 
-_DOC_EXTRACTION_MANAGER = DoclingAsyncManager(max_parallel=5)
+_DOC_EXTRACTION_MANAGER = DoclingAsyncManager(max_parallel=DOCLING_MAX_WORKERS)
 
 
 def _configure_debug_logger() -> Optional[logging.Logger]:
@@ -198,6 +209,24 @@ def log(msg):
             _LOGGER.info(f"[{WORKER_ID}] {msg}")
         except Exception:
             pass
+
+
+def create_db_conn():
+    db_path = Path(DB_PATH)
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    conn = sqlite3.connect(str(db_path), timeout=30, isolation_level=None, check_same_thread=False)
+    ensure_db(conn)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
+    except Exception:
+        pass
+    conn.row_factory = sqlite_dict_factory
+    return conn
 
 
 def log_debug(msg):
@@ -680,49 +709,46 @@ def brain_ingest_text(
 
 # === Worker logic ===
 
-def process_one(conn, job_id, file_id):
-    """Run a full ingest pipeline for a single file (download, extract, chunk, context, and upload to Qdrant)."""
+
+def _get_field(row, key_or_idx, fallback=None):
+    if row is None:
+        return fallback
+    if isinstance(row, dict):
+        return row.get(key_or_idx, fallback)
+    try:
+        return row[key_or_idx]
+    except Exception:
+        try:
+            return row[int(key_or_idx)]
+        except Exception:
+            return fallback
+
+
+
+def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResult | None:
     from pathlib import Path
 
-    # --- Helper für row-factory-agnostischen Zugriff (dict/sqlite3.Row/tuple) ---
-    def _get(row, key_or_idx, fallback=None):
-        if row is None:
-            return fallback
-        if isinstance(row, dict):
-            return row.get(key_or_idx, fallback)
-        try:
-            return row[key_or_idx]
-        except Exception:
-            try:
-                return row[int(key_or_idx)]
-            except Exception:
-                return fallback
-
     log(f"[process_start] job_id={job_id} file_id={file_id}")
-    # 1) Pfad aus files
     row = conn.execute("SELECT path, size, mtime, priority FROM files WHERE id=?", (file_id,)).fetchone()
     if not row:
         finish_error(conn, job_id, file_id, "error_missing_db_record", "file_id not found in files")
-        return
-    path = _get(row, "path", _get(row, 0))
+        return None
+    path = _get_field(row, "path", _get_field(row, 0))
     if not path:
         finish_error(conn, job_id, file_id, "error_missing_path", "path column missing/empty")
-        return
+        return None
     original_path = str(path)
     p = Path(path)
     temp_file: Path | None = None
-    size_hint = _get(row, "size")
-    log(
-        f"[process_path] job_id={job_id} file_id={file_id} path={p} size={size_hint} priority={_get(row, 'priority')}"
-    )
+    size_hint = _get_field(row, "size")
+    log(f"[process_path] job_id={job_id} file_id={file_id} path={p} size={size_hint} priority={_get_field(row, 'priority')}")
     safe_log(conn, job_id, file_id, "path_ok", str(p))
+    log_decision(conn, job_id, file_id, "docling_queue", "pending docling conversion")
 
     if not p.exists():
         try:
             client = get_nextcloud_client()
-            log(
-                f"[download_missing] job_id={job_id} file_id={file_id} path={path} base_url={NEXTCLOUD_BASE_URL}"
-            )
+            log(f"[download_missing] job_id={job_id} file_id={file_id} path={path} base_url={NEXTCLOUD_BASE_URL}")
             temp_file = client.download_to_temp(path, suffix=p.suffix)
             p = temp_file
             safe_log(conn, job_id, file_id, "downloaded", f"temp={p}")
@@ -730,245 +756,158 @@ def process_one(conn, job_id, file_id):
             log(f"[download_missing_error] job_id={job_id} path={path} err={exc}")
             update_file_result(conn, file_id, {"accepted": False, "error": "missing_file"})
             finish_error(conn, job_id, file_id, "error_missing_file", f"{exc}")
-            return
+            return None
 
-    # Snapshot der Gates/ENV
     try:
-        gate_msg = (
-            f"MIN_CHARS={MIN_CHARS} "
-            f"RELEVANCE_THRESHOLD={RELEVANCE_THRESHOLD} "
-            f"MAX_TEXT_CHARS={MAX_TEXT_CHARS} "
-            f"MAX_CHUNKS={MAX_CHUNKS} OVERLAP={OVERLAP} "
-            f"OLLAMA_HOST={'set' if OLLAMA_HOST else 'unset'} "
-            f"OLLAMA_MODEL={OLLAMA_MODEL!s} "
-            f"MODEL_RELEVANCE={OLLAMA_MODEL_RELEVANCE!s} "
-            f"MODEL_CHUNKING={OLLAMA_MODEL_CHUNKING!s} "
-            f"MODEL_CONTEXT={OLLAMA_MODEL_CONTEXT!s} "
-            f"BRAIN_URL={'set' if BRAIN_URL else 'unset'} "
-            f"KEY={'yes' if BRAIN_API_KEY else 'no'}"
+        log_decision(conn, job_id, file_id, "docling_extracting", "sending to docling-serve")
+        extraction_outcome = extract_document(
+            p,
+            job_id=job_id,
+            file_id=file_id,
+            original_path=original_path,
+            async_slot_provider=_DOC_EXTRACTION_MANAGER.slot,
         )
-        safe_log(conn, job_id, file_id, "gate_snapshot", gate_msg)
-    except Exception:
-        pass
+        extraction = extraction_outcome.extraction
+        docling_source = extraction_outcome.source
+        debug_dir = extraction_outcome.debug_dir
+        clean = (extraction.text or "").strip()
+        detected = extraction.mime_type or "docling-serve"
+        log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; source={docling_source}")
+        log_decision(conn, job_id, file_id, "extract_ok", f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}")
+    except ExtractionFailed as exc:
+        update_file_result(conn, file_id, {"accepted": False, "skipped": "extract_failed", "error": str(exc)})
+        finish_error(conn, job_id, file_id, "error_extract_failed", str(exc))
+        return None
+    finally:
+        if temp_file and temp_file.exists():
+            try:
+                temp_file.unlink()
+            except Exception:
+                pass
 
-    # 2) Existiert Datei?
-    if not p.exists():
-        update_file_result(conn, file_id, {"accepted": False, "error": "missing_file"})
-        finish_error(conn, job_id, file_id, "error_missing_file", "file missing on disk")
+    if not clean or len(clean) < MIN_CHARS:
+        update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
+        log_decision(conn, job_id, file_id, "threshold", f"skip: too_short chars={len(clean)} < MIN_CHARS={MIN_CHARS}")
+        finish_success(conn, job_id, file_id, "skipped_too_short")
+        return None
+
+    if len(clean) > MAX_TEXT_CHARS:
+        clean = clean[:MAX_TEXT_CHARS]
+        log_decision(conn, job_id, file_id, "threshold", f"cap: truncated to {MAX_TEXT_CHARS} chars")
+
+    doc_dbg_dir: Optional[Path] = None
+    if DEBUG and debug_dir:
+        try:
+            doc_dbg_dir = ensure_dir(debug_dir / "ai_score")
+        except Exception:
+            doc_dbg_dir = None
+
+    log_decision(conn, job_id, file_id, "extraction_complete", f"chars={len(clean)}")
+
+    return ExtractionStageResult(job_id, file_id, extraction_outcome, clean, doc_dbg_dir)
+
+
+
+def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
+    job_id = stage.job_id
+    file_id = stage.file_id
+    extraction_outcome = stage.extraction_outcome
+    extraction = extraction_outcome.extraction
+    clean = stage.clean_text
+    doc_dbg_dir = stage.doc_dbg_dir
+
+    try:
+        if not OLLAMA_HOST:
+            safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
+            raise RuntimeError("OLLAMA disabled")
+        log_decision(conn, job_id, file_id, "stage_relevance", "running relevance check")
+        log(f"[ai_score_start] job_id={job_id} file_id={file_id} len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
+        safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
+        ai = ai_score_text(
+            OLLAMA_HOST,
+            OLLAMA_MODEL_RELEVANCE,
+            clean,
+            timeout=600,
+            debug=DEBUG,
+            dbg_root=Path("./debug"),
+            dbg_dir=doc_dbg_dir,
+        )
+        is_rel = bool(ai.get("is_relevant"))
+        conf = float(ai.get("confidence", 0.0))
+        log(f"[ai_score_result] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf}")
+        safe_log(conn, job_id, file_id, "score", f"is_rel={is_rel} conf={conf}")
+    except Exception as e:
+        update_file_result(conn, file_id, {"accepted": False, "error": f"ai_scoring_failed: {e}"})
+        finish_error(conn, job_id, file_id, "error_ai_scoring", f"ai_scoring_failed: {e}")
+        return
+
+    if not is_rel or conf < RELEVANCE_THRESHOLD:
+        log(f"[ai_threshold_skip] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf} threshold={RELEVANCE_THRESHOLD}")
+        update_file_result(conn, file_id, {"accepted": False, "ai": ai, "reason": "below_threshold", "threshold": RELEVANCE_THRESHOLD})
+        log_decision(conn, job_id, file_id, "threshold", f"skip: is_relevant={is_rel} conf={conf} < RELEVANCE_THRESHOLD={RELEVANCE_THRESHOLD}")
+        finish_success(conn, job_id, file_id, "ai_not_relevant")
         return
 
     try:
-        try:
-            extraction_outcome = extract_document(
-                p,
-                job_id=job_id,
-                file_id=file_id,
-                original_path=original_path,
-                async_slot_provider=_DOC_EXTRACTION_MANAGER.slot,
-            )
-            extraction = extraction_outcome.extraction
-            ingestor = extraction_outcome.ingestor
-            docling_source = extraction_outcome.source
-            debug_dir = extraction_outcome.debug_dir
-    
-            clean = (extraction.text or "").strip()
-            detected = extraction.mime_type or "docling-serve"
-            log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; source={docling_source}")
-            log_decision(
-                conn,
-                job_id,
-                file_id,
-                "extract_ok",
-                f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}",
-            )
-        except ExtractionFailed as exc:
-            update_file_result(
-                conn,
-                file_id,
-                {"accepted": False, "skipped": "extract_failed", "error": str(exc)},
-            )
-            finish_error(conn, job_id, file_id, "error_extract_failed", str(exc))
-            return
-    
-        if not clean or len(clean) < MIN_CHARS:
-            update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
-            log_decision(conn, job_id, file_id, "threshold", f"skip: too_short chars={len(clean)} < MIN_CHARS={MIN_CHARS}")
-            finish_success(conn, job_id, file_id, "skipped_too_short")
-            return
-    
-        if len(clean) > MAX_TEXT_CHARS:
-            clean = clean[:MAX_TEXT_CHARS]
-            log_decision(conn, job_id, file_id, "threshold", f"cap: truncated to {MAX_TEXT_CHARS} chars")
-    
-        doc_dbg_dir: Optional[Path] = None
-        if DEBUG and debug_dir:
-            try:
-                doc_dbg_dir = ensure_dir(debug_dir / "ai_score")
-            except Exception:
-                doc_dbg_dir = None
-    
-        try:
-            if not OLLAMA_HOST:
-                safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
-                raise RuntimeError("OLLAMA disabled")
-            log(
-                f"[ai_score_start] job_id={job_id} file_id={file_id} len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}"
-            )
-            safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
-            ai = ai_score_text(
-                OLLAMA_HOST,
-                OLLAMA_MODEL_RELEVANCE,
-                clean,
-                timeout=600,
-                debug=DEBUG,
-                dbg_root=Path("./debug"),
-                dbg_dir=doc_dbg_dir,
-            )
-            is_rel = bool(ai.get("is_relevant"))
-            conf   = float(ai.get("confidence", 0.0))
-            log(f"[ai_score_result] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf}")
-            safe_log(conn, job_id, file_id, "score", f"is_rel={is_rel} conf={conf}")
-        except Exception as e:
-            update_file_result(conn, file_id, {"accepted": False, "error": f"ai_scoring_failed: {e}"})
-            finish_error(conn, job_id, file_id, "error_ai_scoring", f"ai_scoring_failed: {e}")
-            return
-    
-        if not is_rel or conf < RELEVANCE_THRESHOLD:
-            log(
-                f"[ai_threshold_skip] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf} threshold={RELEVANCE_THRESHOLD}"
-            )
-            update_file_result(conn, file_id, {"accepted": False, "ai": ai, "reason": "below_threshold", "threshold": RELEVANCE_THRESHOLD})
-            log_decision(conn, job_id, file_id, "threshold", f"skip: is_relevant={is_rel} conf={conf} < RELEVANCE_THRESHOLD={RELEVANCE_THRESHOLD}")
-            finish_success(conn, job_id, file_id, "ai_not_relevant")
-            return
-    
-        try:
-            extraction_outcome.upload_images()
-            replace_file_images(conn, file_id, extraction.images)
-        except Exception as exc:
-            update_file_result(conn, file_id, {"accepted": False, "error": f"image_upload_failed: {exc}"})
-            finish_error(conn, job_id, file_id, "error_image_upload", f"image_upload_failed: {exc}")
-            return
-    
-        log(
-            f"[chunking_start] job_id={job_id} file_id={file_id} len={len(clean)} max_chunks={MAX_CHUNKS} overlap={OVERLAP}"
-        )
-        safe_log(
-            conn,
-            job_id,
-            file_id,
-            "chunking_request",
-            f"model={OLLAMA_MODEL_CHUNKING} tokens={BRAIN_CHUNK_TOKENS} overlap_chars={OVERLAP} max_chunks={MAX_CHUNKS} chars={len(clean)}",
-        )
-        chunk_texts, chunk_meta = chunk_document_with_llm_fallback(
-            clean,
-            ollama_host=OLLAMA_HOST,
-            model=OLLAMA_MODEL_CHUNKING,
-            target_tokens=BRAIN_CHUNK_TOKENS,
-            overlap_chars=OVERLAP,
-            max_chunks=MAX_CHUNKS,
-            timeout=BRAIN_REQUEST_TIMEOUT,
-            debug=DEBUG,
-            return_debug=True,
-        )
-    
-        chunk_source = "llm_chunking"
-        if chunk_meta.get("chunk_source") == "fallback":
-            chunk_source = "llm_fallback"
-        if chunk_meta:
-            safe_log(
-                conn,
-                job_id,
-                file_id,
-                "chunking_meta",
-                json.dumps(chunk_meta, ensure_ascii=False)[:500],
-            )
-            log_debug(
-                f"[chunking_meta] job_id={job_id} file_id={file_id} llm={chunk_meta.get('llm_info')} fallback={chunk_meta.get('fallback_used')}"
-            )
-    
-        if not chunk_texts and extraction.chunks:
-            chunk_texts = [c.text for c in extraction.chunks]
-            chunk_source = "docling_fallback"
-            log_debug(
-                f"[chunking_docling_fallback] job_id={job_id} file_id={file_id} using {len(chunk_texts)} docling chunks"
-            )
-        elif not chunk_texts:
-            chunk_texts = [clean]
-            chunk_source = "single_block"
-            log_debug(
-                f"[chunking_single_block] job_id={job_id} file_id={file_id} chars={len(clean)}"
-            )
-        log(
-            f"[chunking_done] job_id={job_id} file_id={file_id} chunks={len(chunk_texts)} source={chunk_source}"
-        )
-        log_debug(
-            f"[chunking_detail] job_id={job_id} file_id={file_id} chunk_lengths={[len(c) for c in chunk_texts]}"
-        )
-        try:
-            safe_log(
-                conn,
-                job_id,
-                file_id,
-                "chunking_lengths",
-                str([len(c) for c in chunk_texts])[:500],
-            )
-        except Exception:
-            pass
-    
-        if DEBUG:
-            extraction_outcome.debug_dump(chunk_texts=chunk_texts)
-    
-        chunks: List[DoclingChunk] = []
-        for idx, chunk_text in enumerate(chunk_texts, 1):
-            meta: Dict[str, object] = {
-                "chunk_index": idx,
-                "chunks_total": len(chunk_texts),
-            }
-            if chunk_source == "docling_fallback" and idx - 1 < len(extraction.chunks):
-                original_meta = extraction.chunks[idx - 1].meta
-                for key in ("page_start", "page_end", "section"):
-                    if key in original_meta:
-                        meta[key] = original_meta[key]
-            chunks.append(DoclingChunk(text=chunk_text, meta=meta))
-            log_debug(
-                f"[chunk_built] job_id={job_id} file_id={file_id} idx={idx}/{len(chunk_texts)} len={len(chunk_text)} meta={meta}"
-            )
-    
-        try:
-            enriched = enrich_chunks_with_context(
-                document=clean,
-                chunks=[c.text for c in chunks],
-                ollama_host=OLLAMA_HOST,
-                model=OLLAMA_MODEL_CONTEXT,
-                timeout=BRAIN_REQUEST_TIMEOUT,
-                debug=DEBUG,
-            )
-            if enriched and len(enriched) == len(chunks):
-                for chunk, enriched_text in zip(chunks, enriched):
-                    chunk.text = enriched_text
-                chunk_source += "+context"
-        except Exception as e:
-            safe_log(conn, job_id, file_id, "context_fallback", f"{e}")
-    
-        log(
-            f"[chunk_plan] job_id={job_id} file_id={file_id} chunks={len(chunks)} source={chunk_source} overlap={OVERLAP}"
-        )
-        log_decision(
-            conn,
-            job_id,
-            file_id,
-            "chunk_plan",
-            f"chunks={len(chunks)} via {chunk_source} overlap={OVERLAP}",
-        )
-    
-        errors = []
-        for idx, chunk in enumerate(chunks, 1):
+        extraction_outcome.upload_images()
+        replace_file_images(conn, file_id, extraction.images)
+    except Exception as exc:
+        update_file_result(conn, file_id, {"accepted": False, "error": f"image_upload_failed: {exc}"})
+        finish_error(conn, job_id, file_id, "error_image_upload", f"image_upload_failed: {exc}")
+        return
+
+    log(f"[chunking_start] job_id={job_id} file_id={file_id} len={len(clean)} max_chunks={MAX_CHUNKS} overlap={OVERLAP}")
+    log_decision(conn, job_id, file_id, "stage_chunking", "chunking text")
+    safe_log(conn, job_id, file_id, "chunking_request", f"model={OLLAMA_MODEL_CHUNKING} tokens={BRAIN_CHUNK_TOKENS} overlap_chars={OVERLAP} max_chunks={MAX_CHUNKS} chars={len(clean)}")
+    chunk_texts, chunk_meta = chunk_document_with_llm_fallback(
+        clean,
+        ollama_host=OLLAMA_HOST,
+        model=OLLAMA_MODEL_CHUNKING,
+        target_tokens=BRAIN_CHUNK_TOKENS,
+        overlap_chars=OVERLAP,
+        max_chunks=MAX_CHUNKS,
+        timeout=BRAIN_REQUEST_TIMEOUT,
+        debug=DEBUG,
+        return_debug=True,
+    )
+
+    chunk_source = "llm_chunking"
+    if chunk_meta.get("chunk_source") == "fallback":
+        chunk_source = "llm_fallback"
+    if chunk_meta:
+        safe_log(conn, job_id, file_id, "chunking_meta", json.dumps(chunk_meta, ensure_ascii=False)[:500])
+        log_debug(f"[chunking_meta] job_id={job_id} file_id={file_id} llm={chunk_meta.get('llm_info')} fallback={chunk_meta.get('fallback_used')}")
+
+    if not chunk_texts and extraction.chunks:
+        chunk_texts = [c.text for c in extraction.chunks]
+        chunk_source = "docling_fallback"
+        safe_log(conn, job_id, file_id, "chunking_fallback", "used docling chunks due to empty LLM output")
+
+    log(f"[add_context_start] job_id={job_id} file_id={file_id} chunks={len(chunk_texts)}")
+    log_decision(conn, job_id, file_id, "stage_context", "adding context")
+    chunks = enrich_chunks_with_context(
+        chunk_texts,
+        ollama_host=OLLAMA_HOST,
+        model=OLLAMA_MODEL_CONTEXT,
+        timeout=BRAIN_REQUEST_TIMEOUT,
+        debug=DEBUG,
+    )
+
+    errors = []
+    for idx, chunk in enumerate(chunks):
+        if chunk.error:
+            errors.append(f"chunk {idx} error: {chunk.error}")
+
+    if errors:
+        update_file_result(conn, file_id, {"accepted": False, "errors": errors})
+        finish_error(conn, job_id, file_id, "error_chunk_context", "; ".join(errors)[:500])
+        return
+
+    try:
+        log_decision(conn, job_id, file_id, "stage_embedding", "sending chunks to brain")
+        chunk_outcome = []
+        for idx, chunk in enumerate(chunks):
             chunk_meta = {
-                "source": "RAGIngestQdrant",
-                "path": original_path,
-                "document_name": posixpath.basename(original_path.rstrip("/")) or p.name,
-                "temp_name": extraction.slug,
                 "chunk_index": chunk.meta.get("chunk_index", idx),
                 "chunks_total": len(chunks),
                 "job_id": job_id,
@@ -982,19 +921,9 @@ def process_one(conn, job_id, file_id):
                 if not BRAIN_URL:
                     safe_log(conn, job_id, file_id, "no_brain_url", "BRAIN_URL not set -> skipping POST")
                     raise RuntimeError("Brain URL not configured")
-                log(
-                    f"[brain_post] job_id={job_id} file_id={file_id} chunk={idx}/{len(chunks)} len={len(chunk.text)}"
-                )
-                log_debug(
-                    f"[brain_post_payload] job_id={job_id} file_id={file_id} idx={idx} meta={chunk_meta}"
-                )
-                safe_log(
-                    conn,
-                    job_id,
-                    file_id,
-                    "pre_brain_post",
-                    f"chunk={idx}/{len(chunks)} len={len(chunk.text)} url={BRAIN_URL}",
-                )
+                log(f"[brain_post] job_id={job_id} file_id={file_id} chunk={idx}/{len(chunks)} len={len(chunk.text)}")
+                log_debug(f"[brain_post_payload] job_id={job_id} file_id={file_id} idx={idx} meta={chunk_meta}")
+                safe_log(conn, job_id, file_id, "pre_brain_post", f"chunk={idx}/{len(chunks)} len={len(chunk.text)} url={BRAIN_URL}")
                 ok = brain_ingest_text(
                     BRAIN_URL,
                     BRAIN_API_KEY,
@@ -1003,7 +932,7 @@ def process_one(conn, job_id, file_id):
                     collection=BRAIN_COLLECTION,
                     timeout=BRAIN_REQUEST_TIMEOUT,
                     debug=DEBUG,
-                    dbg_dir=doc_dbg_dir,
+                    dbg_dir=stage.doc_dbg_dir,
                     dbg_root=Path("./debug"),
                 )
                 if ok:
@@ -1012,79 +941,108 @@ def process_one(conn, job_id, file_id):
                     errors.append(f"chunk {idx} failed")
             except Exception as e:
                 safe_log(conn, job_id, file_id, "brain_err", f"chunk={idx} err={e}")
-                log(
-                    f"[brain_error] job_id={job_id} file_id={file_id} chunk={idx}/{len(chunks)} err={e}"
-                )
+                log(f"[brain_error] job_id={job_id} file_id={file_id} chunk={idx}/{len(chunks)} err={e}")
                 errors.append(f"chunk {idx} error: {e}")
-    
-        sanitized_images = extraction_outcome.sanitized_images()
-    
-        result = {
-            "accepted": len(errors) == 0,
-            "ai": ai,
-            "chunks": len(chunks),
-            "docling": {
-                "mime": extraction.mime_type,
-                "source": docling_source,
-                "chunks": [chunk.meta for chunk in chunks],
-                "images": sanitized_images,
-            },
-            "images": sanitized_images,
-        }
-        if errors:
-            result["errors"] = errors
-            update_file_result(conn, file_id, result)
-            finish_error(conn, job_id, file_id, "error_brain_ingest", "; ".join(errors)[:500])
-            return
-    
-        update_file_result(conn, file_id, result)
-        finish_success(conn, job_id, file_id, "vectorized")
-    finally:
-        if temp_file and temp_file.exists():
-            try:
-                temp_file.unlink()
-            except Exception:
-                pass
+            chunk_outcome.append(chunk_meta)
+    except Exception as exc:
+        errors.append(str(exc))
 
+    sanitized_images = extraction_outcome.sanitized_images()
+    result = {
+        "accepted": len(errors) == 0,
+        "ai": ai,
+        "chunks": len(chunks),
+        "docling": {
+            "mime": extraction.mime_type,
+            "source": extraction_outcome.source,
+            "chunks": chunk_outcome if chunk_outcome else [c.meta for c in chunks],
+            "images": sanitized_images,
+        },
+        "images": sanitized_images,
+    }
+    if errors:
+        result["errors"] = errors
+        update_file_result(conn, file_id, result)
+        finish_error(conn, job_id, file_id, "error_brain_ingest", "; ".join(errors)[:500])
+        return
+
+    update_file_result(conn, file_id, result)
+    finish_success(conn, job_id, file_id, "vectorized")
+
+
+
+def process_one(conn, job_id, file_id, stage: ExtractionStageResult | None = None):
+    active_stage = stage or run_extraction_stage(conn, job_id, file_id)
+    if active_stage is None:
+        return
+    run_post_extraction_pipeline(conn, active_stage)
 
 def main():
-    # Robust SQLite connection: timeout + autocommit and WAL/busy settings
-    db_path = Path(DB_PATH)
-    try:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-    conn = sqlite3.connect(str(db_path), timeout=30, isolation_level=None)
-    ensure_db(conn)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=5000;")
-    except Exception:
-        pass
-    conn.row_factory = sqlite_dict_factory
+    conn = create_db_conn()
+    executor = ThreadPoolExecutor(max_workers=DOCLING_MAX_WORKERS)
+    futures: dict[Future, tuple[str, str]] = {}
+    ready: list[ExtractionStageResult] = []
+
+    def submit_if_slot_available():
+        while len(futures) < DOCLING_MAX_WORKERS:
+            job_id, file_id = claim_one(conn)
+            if not job_id:
+                break
+
+            def _task(jid=job_id, fid=file_id):
+                local_conn = create_db_conn()
+                try:
+                    return run_extraction_stage(local_conn, jid, fid)
+                finally:
+                    try:
+                        local_conn.close()
+                    except Exception:
+                        pass
+
+            futures[executor.submit(_task)] = (job_id, file_id)
+            log(f"[docling_dispatch] job_id={job_id} file_id={file_id} active={len(futures)} limit={DOCLING_MAX_WORKERS}")
 
     log(
         f"[startup] DB={DB_PATH} brain_url={BRAIN_URL} key_present={bool(BRAIN_API_KEY)} "
-        f"threshold={RELEVANCE_THRESHOLD} worker_id={WORKER_ID}"
+        f"threshold={RELEVANCE_THRESHOLD} worker_id={WORKER_ID} docling_workers={DOCLING_MAX_WORKERS}"
     )
     try:
         while True:
-            log("[loop] tick")
             cleanup_stale(conn)
-            job_id, file_id = claim_one(conn)
-            log(f"[claim] job_id={job_id} file_id={file_id}")
-            if not job_id:
+            submit_if_slot_available()
+
+            done = [f for f in list(futures) if f.done()]
+            for fut in done:
+                job_meta = futures.pop(fut)
+                try:
+                    result = fut.result()
+                    if result:
+                        ready.append(result)
+                except Exception as exc:
+                    log(f"[docling_task_error] job={job_meta} err={exc}")
+
+            if ready:
+                stage = ready.pop(0)
+                log(f"[pipeline_start] job_id={stage.job_id} file_id={stage.file_id} queued={len(ready)}")
+                try:
+                    log_decision(conn, stage.job_id, stage.file_id, "pipeline_start", "starting relevance->embedding")
+                except Exception:
+                    pass
+                process_one(conn, stage.job_id, stage.file_id, stage)
+                continue
+
+            if futures:
+                time.sleep(IDLE_SLEEP_S)
+                continue
+
+            submit_if_slot_available()
+            if not futures and not ready:
                 log("no queued jobs found - shutting down")
                 break
-            try:
-                process_one(conn, job_id, file_id)
-            except Exception as e:
-                traceback.print_exc()
-                finish_error(conn, job_id, file_id, "error_fatal", f"fatal: {e}")
     except KeyboardInterrupt:
         log("stopping...")
     finally:
+        executor.shutdown(wait=False)
         try:
             conn.close()
         except Exception:

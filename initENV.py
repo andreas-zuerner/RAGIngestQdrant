@@ -113,4 +113,7 @@ FOLLOW_SYMLINKS = env_bool("FOLLOW_SYMLINKS", False)
 MAX_JOBS_PER_PASS = env_int("MAX_JOBS_PER_PASS", 5)
 SLEEP_SECS = env_int("SLEEP_SECS", 10)
 WORKER_STOP_TIMEOUT = env_int("WORKER_STOP_TIMEOUT", 20)
-MAX_WORKERS = env_int("MAX_WORKERS", 1)
+# Maximum number of concurrent docling-serve conversions
+DOCLING_MAX_WORKERS = env_int("MAX_WORKERS", 1)
+# Number of ingest_worker processes handling the post-extraction pipeline
+PIPELINE_WORKERS = env_int("PIPELINE_WORKERS", 1)
