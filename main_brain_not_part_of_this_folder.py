@@ -175,7 +175,7 @@ async def health_extended():
     }
 
 # ------------------ Helpers ------------------
-TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+TIMEOUT = httpx.Timeout(90.0, connect=5.0)
 client = httpx.AsyncClient(timeout=TIMEOUT)
 
 async def ensure_collection(collection: str | None = None):
