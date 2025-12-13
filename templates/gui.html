@@ -93,6 +93,8 @@
     .worker-empty { color: var(--muted); margin: 0; }
     .pipeline-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
     .pipeline-stack { display: flex; flex-direction: column; gap: 12px; }
+    .pipeline-wrapper { grid-column: 2 / span 2; display: flex; flex-direction: column; gap: 12px; }
+    .pipeline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
   </style>
 </head>
   <body>
@@ -178,78 +180,77 @@
       <p>Removes Qdrant points, marks the entry in state.db, and deletes matching images in Nextcloud (documents remain unchanged).</p>
     </section>
 
-    <section class="worker-dashboard">
+    <section class="worker-dashboard pipeline-wrapper">
       <div class="pipeline-header">
         <h2 style="margin: 0;">Pipeline dashboard</h2>
         <button type="button" id="pipeline-refresh">Refresh</button>
       </div>
-      <div class="pipeline-stack">
-        <div>
-          <h3>Queued by scheduler</h3>
-          {% if pipeline_overview.queued %}
-            <ul class="results-list">
-              {% for job in pipeline_overview.queued %}
-                <li class="point-item">
-                  <div class="point-title">{{ job.file_id }}</div>
-                  <div class="point-sub">Path: {{ job.path }}</div>
-                </li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <p class="worker-empty">No queued files.</p>
-          {% endif %}
+      <div class="pipeline-grid">
+        <div class="pipeline-stack">
+          <div>
+            <h3>Queued by scheduler</h3>
+            {% if pipeline_overview.queued %}
+              <ul class="results-list">
+                {% for job in pipeline_overview.queued %}
+                  <li class="point-item">
+                    <div class="point-title">{{ job.file_id }}</div>
+                    <div class="point-sub">Path: {{ job.path }}</div>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="worker-empty">No queued files.</p>
+            {% endif %}
+          </div>
+          <div>
+            <h3>Docling in progress ({{ pipeline_overview.docling|length }})</h3>
+            {% if pipeline_overview.docling %}
+              <ul class="results-list">
+                {% for job in pipeline_overview.docling %}
+                  <li class="point-item">
+                    <div class="point-title">{{ job.file_id }}</div>
+                    <div class="point-sub">Path: {{ job.path }}</div>
+                    <div class="point-sub">Worker: {{ job.worker_id or 'n/a' }}</div>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="worker-empty">No docling tasks running.</p>
+            {% endif %}
+          </div>
         </div>
-        <div>
-          <h3>Docling in progress ({{ pipeline_overview.docling|length }})</h3>
-          {% if pipeline_overview.docling %}
-            <ul class="results-list">
-              {% for job in pipeline_overview.docling %}
-                <li class="point-item">
-                  <div class="point-title">{{ job.file_id }}</div>
-                  <div class="point-sub">Path: {{ job.path }}</div>
-                  <div class="point-sub">Worker: {{ job.worker_id or 'n/a' }}</div>
-                </li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <p class="worker-empty">No docling tasks running.</p>
-          {% endif %}
-        </div>
-      </div>
-    </section>
-
-    <section class="worker-dashboard">
-      <div class="pipeline-stack">
-        <div>
-          <h3>Extracted (awaiting pipeline)</h3>
-          {% if pipeline_overview.extracted %}
-            <ul class="results-list">
-              {% for job in pipeline_overview.extracted %}
-                <li class="point-item">
-                  <div class="point-title">{{ job.file_id }}</div>
-                  <div class="point-sub">Path: {{ job.path }}</div>
-                </li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <p class="worker-empty">No extracted files waiting.</p>
-          {% endif %}
-        </div>
-        <div>
-          <h3>Pipeline processing</h3>
-          {% if pipeline_overview.pipeline %}
-            <ul class="results-list">
-              {% for job in pipeline_overview.pipeline %}
-                <li class="point-item">
-                  <div class="point-title">{{ job.file_id }}</div>
-                  <div class="point-sub">Path: {{ job.path }}</div>
-                  <div class="point-sub">Stage: {{ job.stage_label or 'relevance' }}</div>
-                </li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <p class="worker-empty">No files in post-extraction pipeline.</p>
-          {% endif %}
+        <div class="pipeline-stack">
+          <div>
+            <h3>Extracted (awaiting pipeline)</h3>
+            {% if pipeline_overview.extracted %}
+              <ul class="results-list">
+                {% for job in pipeline_overview.extracted %}
+                  <li class="point-item">
+                    <div class="point-title">{{ job.file_id }}</div>
+                    <div class="point-sub">Path: {{ job.path }}</div>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="worker-empty">No extracted files waiting.</p>
+            {% endif %}
+          </div>
+          <div>
+            <h3>Pipeline processing</h3>
+            {% if pipeline_overview.pipeline %}
+              <ul class="results-list">
+                {% for job in pipeline_overview.pipeline %}
+                  <li class="point-item">
+                    <div class="point-title">{{ job.file_id }}</div>
+                    <div class="point-sub">Path: {{ job.path }}</div>
+                    <div class="point-sub">Stage: {{ job.stage_label or 'relevance' }}</div>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="worker-empty">No files in post-extraction pipeline.</p>
+            {% endif %}
+          </div>
         </div>
       </div>
     </section>

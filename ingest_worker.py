@@ -364,6 +364,34 @@ def cleanup_stale(conn):
     return freed
 
 
+def refresh_active_locks(conn, job_ids: list[str]) -> int:
+    """Heartbeat running jobs to avoid premature requeueing.
+
+    When extraction or post-processing exceeds the lock timeout, stale cleanup
+    would otherwise flip the job back to ``queued`` even though the worker is
+    still processing it. This function updates ``locked_at`` for the given
+    active jobs so they remain owned by the current worker until completion.
+    """
+
+    unique_ids = sorted({jid for jid in job_ids if jid})
+    if not unique_ids:
+        return 0
+
+    placeholders = ",".join("?" for _ in unique_ids)
+    cur = conn.execute(
+        f"""
+        UPDATE jobs
+           SET locked_at=datetime('now'), worker_id=?
+         WHERE status='running' AND job_id IN ({placeholders})
+        """,
+        (WORKER_ID, *unique_ids),
+    )
+    refreshed = cur.rowcount if hasattr(cur, "rowcount") else 0
+    if refreshed:
+        log(f"[heartbeat] refreshed_locks={refreshed} active_jobs={unique_ids}")
+    return refreshed
+
+
 def next_error_count(conn, file_id: str) -> int:
     cur = conn.execute(
         "SELECT COALESCE(error_count, 0) FROM files WHERE id=?",
@@ -1032,6 +1060,7 @@ def main():
     futures: dict[Future, tuple[str, str]] = {}
     ready: list[ExtractionStageResult] = []
     pipeline_future: Future | None = None
+    pipeline_future_job: str | None = None
 
     def submit_if_slot_available():
         while len(futures) < DOCLING_MAX_WORKERS:
@@ -1058,6 +1087,11 @@ def main():
     )
     try:
         while True:
+            active_job_ids = [meta[0] for meta in futures.values()]
+            if pipeline_future_job:
+                active_job_ids.append(pipeline_future_job)
+            active_job_ids.extend([stage.job_id for stage in ready])
+            refresh_active_locks(conn, active_job_ids)
             cleanup_stale(conn)
             submit_if_slot_available()
 
@@ -1077,10 +1111,12 @@ def main():
                 except Exception as exc:
                     log(f"[pipeline_task_error] err={exc}")
                 pipeline_future = None
+                pipeline_future_job = None
 
             if pipeline_future is None and ready:
                 stage = ready.pop(0)
                 pipeline_future = _start_pipeline(pipeline_executor, stage)
+                pipeline_future_job = stage.job_id
                 continue
 
             if futures or ready or pipeline_future:
