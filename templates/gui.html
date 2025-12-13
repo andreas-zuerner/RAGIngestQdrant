@@ -85,12 +85,14 @@
     .detail-header { font-weight: bold; margin-bottom: 6px; }
     .textarea-log { height: 100%; min-height: 360px; flex: 1; }
     .prompt-area textarea { height: 160px; }
-    .delete-dashboard { display: grid; grid-template-columns: 0.4fr 0.6fr; gap: 16px; align-items: start; }
+    .delete-dashboard { display: grid; grid-template-columns: 0.2fr 0.4fr 0.4fr; gap: 16px; align-items: start; }
     @media (max-width: 900px) { .delete-dashboard { grid-template-columns: 1fr; } }
     .worker-dashboard table { width: 100%; border-collapse: collapse; }
     .worker-dashboard th, .worker-dashboard td { padding: 8px; border-bottom: 1px solid var(--border); }
     .worker-dashboard th { text-align: left; color: var(--muted); }
     .worker-empty { color: var(--muted); margin: 0; }
+    .pipeline-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .pipeline-stack { display: flex; flex-direction: column; gap: 12px; }
   </style>
 </head>
   <body>
@@ -177,84 +179,81 @@
     </section>
 
     <section class="worker-dashboard">
-      <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-        <h2 style="margin: 0;">Ingest workers</h2>
-        <button type="button" id="worker-refresh">Refresh</button>
+      <div class="pipeline-header">
+        <h2 style="margin: 0;">Pipeline dashboard</h2>
+        <button type="button" id="pipeline-refresh">Refresh</button>
       </div>
-      <p class="env-desc" style="margin-top: 8px;">Current running jobs and assigned worker IDs. Max workers: {{ max_workers }}.</p>
-      <div id="worker-status-area"></div>
+      <div class="pipeline-stack">
+        <div>
+          <h3>Queued by scheduler</h3>
+          {% if pipeline_overview.queued %}
+            <ul class="results-list">
+              {% for job in pipeline_overview.queued %}
+                <li class="point-item">
+                  <div class="point-title">{{ job.file_id }}</div>
+                  <div class="point-sub">Path: {{ job.path }}</div>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="worker-empty">No queued files.</p>
+          {% endif %}
+        </div>
+        <div>
+          <h3>Docling in progress ({{ pipeline_overview.docling|length }})</h3>
+          {% if pipeline_overview.docling %}
+            <ul class="results-list">
+              {% for job in pipeline_overview.docling %}
+                <li class="point-item">
+                  <div class="point-title">{{ job.file_id }}</div>
+                  <div class="point-sub">Path: {{ job.path }}</div>
+                  <div class="point-sub">Worker: {{ job.worker_id or 'n/a' }}</div>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="worker-empty">No docling tasks running.</p>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    <section class="worker-dashboard">
+      <div class="pipeline-stack">
+        <div>
+          <h3>Extracted (awaiting pipeline)</h3>
+          {% if pipeline_overview.extracted %}
+            <ul class="results-list">
+              {% for job in pipeline_overview.extracted %}
+                <li class="point-item">
+                  <div class="point-title">{{ job.file_id }}</div>
+                  <div class="point-sub">Path: {{ job.path }}</div>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="worker-empty">No extracted files waiting.</p>
+          {% endif %}
+        </div>
+        <div>
+          <h3>Pipeline processing</h3>
+          {% if pipeline_overview.pipeline %}
+            <ul class="results-list">
+              {% for job in pipeline_overview.pipeline %}
+                <li class="point-item">
+                  <div class="point-title">{{ job.file_id }}</div>
+                  <div class="point-sub">Path: {{ job.path }}</div>
+                  <div class="point-sub">Stage: {{ job.stage_label or 'relevance' }}</div>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="worker-empty">No files in post-extraction pipeline.</p>
+          {% endif %}
+        </div>
+      </div>
     </section>
   </div>
-
-  <section class="worker-dashboard">
-    <h2>Pipeline dashboard</h2>
-    <div class="grid-two">
-      <div>
-        <h3>Queued by scheduler</h3>
-        {% if pipeline_overview.queued %}
-          <ul class="results-list">
-            {% for job in pipeline_overview.queued %}
-              <li class="point-item">
-                <div class="point-title">{{ job.file_id }}</div>
-                <div class="point-sub">Path: {{ job.path }}</div>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="worker-empty">No queued files.</p>
-        {% endif %}
-      </div>
-      <div>
-        <h3>Docling in progress ({{ pipeline_overview.docling|length }})</h3>
-        {% if pipeline_overview.docling %}
-          <ul class="results-list">
-            {% for job in pipeline_overview.docling %}
-              <li class="point-item">
-                <div class="point-title">{{ job.file_id }}</div>
-                <div class="point-sub">Path: {{ job.path }}</div>
-                <div class="point-sub">Worker: {{ job.worker_id or 'n/a' }}</div>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="worker-empty">No docling tasks running.</p>
-        {% endif %}
-      </div>
-    </div>
-    <div class="grid-two" style="margin-top: 12px;">
-      <div>
-        <h3>Extracted (awaiting pipeline)</h3>
-        {% if pipeline_overview.extracted %}
-          <ul class="results-list">
-            {% for job in pipeline_overview.extracted %}
-              <li class="point-item">
-                <div class="point-title">{{ job.file_id }}</div>
-                <div class="point-sub">Path: {{ job.path }}</div>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="worker-empty">No extracted files waiting.</p>
-        {% endif %}
-      </div>
-      <div>
-        <h3>Pipeline processing</h3>
-        {% if pipeline_overview.pipeline %}
-          <ul class="results-list">
-            {% for job in pipeline_overview.pipeline %}
-              <li class="point-item">
-                <div class="point-title">{{ job.file_id }}</div>
-                <div class="point-sub">Path: {{ job.path }}</div>
-                <div class="point-sub">Stage: {{ job.stage_label or 'relevance' }}</div>
-              </li>
-            {% endfor %}
-          </ul>
-        {% else %}
-          <p class="worker-empty">No files in post-extraction pipeline.</p>
-        {% endif %}
-      </div>
-    </div>
-  </section>
 
   <section>
     <h2>Environment variables</h2>
@@ -321,7 +320,6 @@
       }
 
       const searchResults = {{ (search_results or []) | tojson | safe }};
-      const workerStatus = {{ (worker_status or []) | tojson | safe }};
     let groupedResults = [];
     let activeGroup = null;
     let activePointIndex = null;
@@ -535,56 +533,6 @@
       container.innerHTML = '<div class="flash">No results yet.</div>';
     }
 
-    function renderWorkers(data) {
-      const container = document.getElementById('worker-status-area');
-      if (!container) return;
-
-      if (!data || !data.length) {
-        container.innerHTML = '<p class="worker-empty">No running workers detected.</p>';
-        return;
-      }
-
-      const table = document.createElement('table');
-      const thead = document.createElement('thead');
-      thead.innerHTML = '<tr><th>Worker ID</th><th>Job ID</th><th>File ID</th><th>Path</th><th>Locked at</th></tr>';
-      const tbody = document.createElement('tbody');
-
-      data.forEach((item) => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-          <td>${item.worker_id || 'unknown'}</td>
-          <td>${item.job_id || 'n/a'}</td>
-          <td>${item.file_id || 'n/a'}</td>
-          <td>${item.path || ''}</td>
-          <td>${item.locked_at || ''}</td>
-        `;
-        tbody.appendChild(row);
-      });
-
-      table.appendChild(thead);
-      table.appendChild(tbody);
-      container.innerHTML = '';
-      container.appendChild(table);
-    }
-
-    async function refreshWorkers() {
-      try {
-        const res = await fetch('{{ url_for('worker_status') }}');
-        if (!res.ok) return;
-        const data = await res.json();
-        renderWorkers(data.workers || []);
-      } catch (e) {
-        // ignore fetch errors in UI
-      }
-    }
-
-    renderWorkers(workerStatus);
-    const refreshBtn = document.getElementById('worker-refresh');
-    if (refreshBtn) {
-      refreshBtn.addEventListener('click', refreshWorkers);
-    }
-    setInterval(refreshWorkers, 5000);
-
     async function refreshLog() {
       try {
         const res = await fetch('{{ url_for('log_data') }}');
@@ -600,10 +548,12 @@
     }
     setInterval(refreshLog, 4000);
 
-    // Refresh the full dashboard periodically to keep pipeline status up to date
-    setInterval(() => {
-      window.location.reload();
-    }, 10000);
+    const pipelineRefresh = document.getElementById('pipeline-refresh');
+    if (pipelineRefresh) {
+      pipelineRefresh.addEventListener('click', () => {
+        window.location.reload();
+      });
+    }
   </script>
 </body>
 </html>

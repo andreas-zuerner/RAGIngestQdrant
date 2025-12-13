@@ -118,6 +118,9 @@ class ExtractionStageResult:
     extraction_outcome: ExtractionOutcome
     clean_text: str
     doc_dbg_dir: Path | None
+    original_path: str
+    temp_path: str | None
+    temp_name: str | None
 
 
 class DoclingAsyncManager:
@@ -804,7 +807,17 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
 
     log_decision(conn, job_id, file_id, "extraction_complete", f"chars={len(clean)}")
 
-    return ExtractionStageResult(job_id, file_id, extraction_outcome, clean, doc_dbg_dir)
+    temp_name = extraction.slug or p.name
+    return ExtractionStageResult(
+        job_id,
+        file_id,
+        extraction_outcome,
+        clean,
+        doc_dbg_dir,
+        original_path,
+        str(temp_file) if temp_file else None,
+        temp_name,
+    )
 
 
 
@@ -815,6 +828,9 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     extraction = extraction_outcome.extraction
     clean = stage.clean_text
     doc_dbg_dir = stage.doc_dbg_dir
+    document_name = extraction.slug or Path(stage.original_path).name
+    temp_path = stage.temp_path or stage.original_path
+    temp_name = stage.temp_name or extraction.slug or Path(temp_path).name
 
     try:
         if not OLLAMA_HOST:
@@ -913,6 +929,11 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
                 "chunks_total": len(chunks),
                 "job_id": job_id,
                 "file_id": file_id,
+                "source": "RAGIngestQdrant",
+                "document_name": document_name,
+                "original_path": stage.original_path,
+                "temp_path": temp_path,
+                "temp_name": temp_name,
             }
             for key in ("page_start", "page_end", "section"):
                 value = chunk.meta.get(key)
