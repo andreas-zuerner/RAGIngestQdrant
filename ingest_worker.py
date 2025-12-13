@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, Future
+from urllib.parse import unquote
 
 import requests
 from nextcloud_client import env_client, NextcloudClient, NextcloudError
@@ -856,7 +857,12 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     extraction = extraction_outcome.extraction
     clean = stage.clean_text
     doc_dbg_dir = stage.doc_dbg_dir
-    document_name = extraction.slug or Path(stage.original_path).name
+    original_name = Path(stage.original_path).name
+    try:
+        original_name = unquote(original_name)
+    except Exception:
+        pass
+    document_name = original_name or extraction.slug or Path(stage.original_path).name
     temp_path = stage.temp_path or stage.original_path
     temp_name = stage.temp_name or extraction.slug or Path(temp_path).name
 

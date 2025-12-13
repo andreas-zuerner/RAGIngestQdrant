@@ -428,6 +428,24 @@ async def admin_scroll_by_name(inp: ScrollByNameIn, _: bool = Depends(check_api_
     results: list[dict] = []
     offset = None
     substring_lower = inp.substring.lower()
+
+    def _iter_strings(value):
+        if value is None:
+            return
+        if isinstance(value, str):
+            yield value
+            return
+        if isinstance(value, (int, float, bool)):
+            yield str(value)
+            return
+        if isinstance(value, dict):
+            for v in value.values():
+                yield from _iter_strings(v)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for v in value:
+                yield from _iter_strings(v)
+            return
     while True:
         body = {"limit": min(inp.limit, 64), "with_payload": True, "offset": offset}
         r = await client.post(
@@ -446,7 +464,15 @@ async def admin_scroll_by_name(inp: ScrollByNameIn, _: bool = Depends(check_api_
                 or (payload.get("meta") or {}).get("path")
                 or ""
             )
-            if substring_lower in file_name.lower():
+            searchable_strings = []
+            if file_name:
+                searchable_strings.append(file_name)
+            text = payload.get("text")
+            if isinstance(text, str):
+                searchable_strings.append(text)
+            searchable_strings.extend(list(_iter_strings(payload.get("meta") or {})))
+
+            if any(substring_lower in s.lower() for s in searchable_strings):
                 results.append(p)
                 if len(results) >= inp.limit:
                     return {"results": results, "count": len(results)}
