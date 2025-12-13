@@ -13,7 +13,7 @@ from flask import Flask, flash, redirect, render_template, request, url_for
 
 import initENV
 from helpers import init_conn
-from nextcloud_client import NextcloudError, env_client
+from nextcloud_client import env_client
 from scan_scheduler import mark_deleted
 import prompt_store
 
@@ -151,46 +151,6 @@ def _dict_from_row(row) -> Dict[str, Optional[str]]:
         return {k: row[k] for k in row.keys()}  # type: ignore[attr-defined]
     except Exception:
         return {}
-
-
-def load_worker_status() -> List[Dict[str, Optional[str]]]:
-    if not DB_PATH.exists():
-        return []
-
-    conn = init_conn(DB_PATH)
-    try:
-        rows = conn.execute(
-            """
-            SELECT jobs.worker_id, jobs.job_id, jobs.file_id, jobs.locked_at, jobs.status,
-                   jobs.last_error, files.path
-              FROM jobs
-              LEFT JOIN files ON files.id = jobs.file_id
-             WHERE jobs.status='running'
-             ORDER BY jobs.locked_at DESC
-            """
-        ).fetchall()
-        workers: List[Dict[str, Optional[str]]] = []
-        for row in rows:
-            data = _dict_from_row(row)
-            if not data:
-                try:
-                    data = {
-                        "worker_id": row[0],
-                        "job_id": row[1],
-                        "file_id": row[2],
-                        "locked_at": row[3],
-                        "status": row[4],
-                        "last_error": row[5],
-                        "path": row[6] if len(row) > 6 else None,
-                    }
-                except Exception:
-                    data = {}
-            workers.append(data)
-        return workers
-    except Exception:
-        return []
-    finally:
-        conn.close()
 
 
 def load_pipeline_overview() -> Dict[str, List[Dict[str, Optional[str]]]]:
@@ -473,9 +433,7 @@ def render_gui(**extra):
         current_env=current_env(),
         qdrant_collection=BRAIN_COLLECTION,
         prompts=read_prompts(),
-        worker_status=load_worker_status(),
         pipeline_overview=load_pipeline_overview(),
-        max_workers=current_env().get("MAX_WORKERS") or initENV.DOCLING_MAX_WORKERS,
     )
     base.update(extra)
     return render_template("gui.html", **base)
@@ -596,11 +554,6 @@ def reload_log():
 @app.get("/log-data")
 def log_data():
     return {"log": read_log()}
-
-
-@app.get("/worker-status")
-def worker_status():
-    return {"workers": load_worker_status()}
 
 
 @app.post("/prompts/update")
