@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 import hashlib
+import logging
 import os
 import signal
 import subprocess
 import sys
 import time
 import uuid
-import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Set
@@ -39,18 +39,30 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 WORKER_SCRIPT = PROJECT_ROOT / "ingest_worker.py"
 PID_FILE = initENV.SCAN_SCHEDULER_PID_FILE
 
-def get_logger():
-    logger = logging.getLogger("scan_scheduler")
+
+def get_logger() -> logging.Logger:
+    log_path = LOG_PATH.resolve()
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger("scan")
     logger.setLevel(logging.DEBUG if initENV.DEBUG else logging.INFO)
-    if not any(isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == str(LOG_PATH.resolve())
-               for h in logger.handlers):
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        h = logging.FileHandler(LOG_PATH, encoding="utf-8")
-        h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [scan] %(message)s",
-                                         datefmt="%Y-%m-%d %H:%M:%S"))
-        logger.addHandler(h)
+    if not any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", None) == str(log_path)
+        for h in logger.handlers
+    ):
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] [scan] %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+        logger.addHandler(handler)
     logger.propagate = False
     return logger
+
+
+_LOGGER = get_logger()
     
 
 def _timestamp() -> str:
@@ -58,9 +70,10 @@ def _timestamp() -> str:
 
 
 def log_scan(message: str):
-    if _LOGGER is None:
-        return
-    _LOGGER.info(message)
+    try:
+        _LOGGER.info(message)
+    except Exception:
+        pass
 
 
 def row_get(row, key, default=None):
