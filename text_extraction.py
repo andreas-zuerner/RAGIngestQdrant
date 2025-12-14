@@ -279,7 +279,7 @@ WORKER_ID = f"{os.uname().nodename}-pid{os.getpid()}"
 def log(msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] [worker] [{WORKER_ID}] {msg}"
-    print(line, flush=True)
+    # print(line, flush=True)
     if initENV.DEBUG and _LOGGER is not None:
         try:
             _LOGGER.info(f"[{WORKER_ID}] {msg}")
