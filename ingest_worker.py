@@ -97,7 +97,7 @@ DECISION_LOG_MAX_PER_JOB = initENV.DECISION_LOG_MAX_PER_JOB
 
 WORKER_ID = f"{os.uname().nodename}-pid{os.getpid()}"
 
-LOG_PATH = Path("logs") / "scan_scheduler.log"
+LOG_PATH = Path(initENV.SCHEDULER_LOG)
 
 _LOGGER: Optional[logging.Logger] = None
 
@@ -173,18 +173,19 @@ class DoclingAsyncManager:
 _DOC_EXTRACTION_MANAGER = DoclingAsyncManager(max_parallel=DOCLING_MAX_WORKERS)
 
 
-def _configure_file_logger() -> logging.Logger:
-    log_path = LOG_PATH.resolve()
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    logger = logging.getLogger("scan")   # oder "ingest_worker" – aber konsistent
-    logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
+def _configure_file_logger() -> Optional[logging.Logger]:
+     try:
+         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+         log_path = LOG_PATH.resolve()
+         logger = logging.getLogger("scan")
 
     if not any(isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == str(log_path)
-               for h in logger.handlers):
+        for h in logger.handlers
+    ):
+        logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
         handler = logging.FileHandler(log_path, encoding="utf-8")
         handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+            "%(asctime)s [%(levelname)s] [worker] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         ))
         logger.addHandler(handler)
@@ -192,20 +193,20 @@ def _configure_file_logger() -> logging.Logger:
     logger.propagate = False
     return logger
 
-_LOGGER = _configure_debug_logger()
+    except Exception:
+        return None
+
+_LOGGER = _configure_file_logger()
 
 _NEXTCLOUD_CLIENT: NextcloudClient | None = None
 
 def log(msg):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] [worker] [{WORKER_ID}] {msg}"
-    # print(line, flush=True)
-    if DEBUG and _LOGGER is not None:
-        try:
-            _LOGGER.info(f"[{WORKER_ID}] {msg}")
-        except Exception:
-            pass
-
+    if _LOGGER is None:
+        return
+    try:
+        _LOGGER.info(f"[{WORKER_ID}] {msg}")
+    except Exception:
+        pass
 
 def create_db_conn():
     db_path = Path(DB_PATH)
