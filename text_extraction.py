@@ -42,8 +42,52 @@ class ExtractionFailed(RuntimeError):
     """Raised when the extraction pipeline cannot produce text."""
 
 
-TEXT_FALLBACK_EXTENSIONS = {".txt", ".text"}
 CONVERT_BEFORE_DOCLING = {".xls", ".doc", ".odf", ".odp", ".odt", ".odg", ".ods", ".odm"}
+SUPPORTED_EXTENSIONS = {
+    ".docx",
+    ".dotx",
+    ".docm",
+    ".dotm",
+    ".pptx",
+    ".potx",
+    ".ppsx",
+    ".pptm",
+    ".potm",
+    ".ppsm",
+    ".pdf",
+    ".md",
+    ".html",
+    ".htm",
+    ".xhtml",
+    ".xml",
+    ".nxml",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".tif",
+    ".tiff",
+    ".bmp",
+    ".webp",
+    ".adoc",
+    ".asciidoc",
+    ".asc",
+    ".csv",
+    ".xlsx",
+    ".xlsm",
+    ".txt",
+    ".json",
+    ".wav",
+    ".mp3",
+    ".m4a",
+    ".aac",
+    ".ogg",
+    ".flac",
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".vtt",
+}
+SUPPORTED_EXTENSIONS |= CONVERT_BEFORE_DOCLING
 
 
 def ensure_dir(path: Path) -> Path:
@@ -86,9 +130,13 @@ def convert_for_docling(file_path: Path) -> Tuple[Path, Optional[Path]]:
     if ext not in CONVERT_BEFORE_DOCLING:
         return file_path, None
 
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice_candidates = [shutil.which("soffice"), shutil.which("libreoffice")]
+    soffice = next((c for c in soffice_candidates if c), None)
     if soffice is None:
-        log(f"[convert_skip_no_soffice] path={file_path} ext={ext}")
+        log(
+            f"[convert_skip_no_soffice] path={file_path} ext={ext} "
+            f"PATH={os.environ.get('PATH')} candidates={soffice_candidates}"
+        )
         return file_path, None
 
     temp_dir: Optional[Path] = None
@@ -424,11 +472,14 @@ class DoclingServeIngestor:
             raise DoclingUnavailableError(f"docling-serve request failed: {exc}") from exc
 
         try:
-            return response.json()
+            payload = response.json()
         except Exception as exc:
             detail = self._response_detail(response)
             suffix = f"; {detail}" if detail else ""
             raise RuntimeError(f"docling-serve returned invalid JSON{suffix}") from exc
+
+        self._ensure_no_docling_error(payload)
+        return payload
 
     def _extract_async(self, file_path: Path) -> Dict[str, object]:
         submit_url = self.async_url or self._derive_async_url(self.service_url)
@@ -460,6 +511,7 @@ class DoclingServeIngestor:
             except Exception as exc:
                 raise RuntimeError("docling-serve async submit returned invalid JSON") from exc
 
+            self._ensure_no_docling_error(submission)
             payload = self._maybe_extract_payload(submission)
             if payload:
                 return payload
@@ -504,16 +556,16 @@ class DoclingServeIngestor:
                 except Exception as exc:
                     last_error = exc
                     task_state.last_error = exc
-                    log_debug(
-                        f"[docling_async_poll_retry] url={poll_url} attempts={task_state.attempts} "
-                        f"err={exc}"
-                    )
+                    raise DoclingUnavailableError(
+                        f"docling-serve async poll failed after {int(time.time() - start)}s: {exc}"
+                    ) from exc
                 else:
                     try:
                         poll_data = poll_response.json()
                     except Exception as exc:
                         raise RuntimeError("docling-serve async poll returned invalid JSON") from exc
 
+                    self._ensure_no_docling_error(poll_data)
                     payload = self._maybe_extract_payload(poll_data)
                     if payload:
                         return payload
@@ -555,12 +607,31 @@ class DoclingServeIngestor:
     def _maybe_extract_payload(self, payload: Dict[str, object]) -> Optional[Dict[str, object]]:
         if not isinstance(payload, dict):
             return None
+        if payload.get("error"):
+            detail = payload.get("detail") or payload.get("message") or payload.get("error")
+            raise DoclingUnavailableError(f"docling-serve reported error: {detail}")
         if payload.get("document"):
             return payload
         result = payload.get("result")
         if isinstance(result, dict) and (result.get("document") or result.get("media")):
+            self._ensure_no_docling_error(result)
             return result
         return None
+
+    def _ensure_no_docling_error(self, payload: Dict[str, object]):
+        if not isinstance(payload, dict):
+            return
+        status = str(payload.get("status") or payload.get("state") or "").lower()
+        if status in {"failed", "error"}:
+            detail = payload.get("detail") or payload.get("message") or payload.get("error")
+            raise DoclingUnavailableError(
+                f"docling-serve reported {status}{f'; {detail}' if detail else ''}"
+            )
+        error_msg = payload.get("error")
+        if error_msg:
+            detail = payload.get("detail") or payload.get("message")
+            suffix = f"; {detail}" if detail else ""
+            raise DoclingUnavailableError(f"docling-serve reported error: {error_msg}{suffix}")
 
     def _derive_async_url(self, service_url: str) -> str:
         if service_url.endswith("/file"):
