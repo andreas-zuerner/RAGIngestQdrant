@@ -553,12 +553,13 @@ class DoclingServeIngestor:
                 api_root = m[0]
 
             poll_url = (
-                submission.get("status_url")
+                submission.get("result_url")
+                or submission.get("status_url")
                 or submission.get("poll_url")
-                or submission.get("result_url")
-                or (f"{api_root}/v1/status/poll/{job_id}" if job_id else None)
                 or (f"{api_root}/v1/result/{job_id}" if job_id else None)
+                or (f"{api_root}/v1/status/poll/{job_id}" if job_id else None)
             )
+
 
             if not poll_url:
                 raise RuntimeError("docling-serve async response did not include a poll URL")
