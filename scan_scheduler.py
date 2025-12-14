@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import uuid
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Set
@@ -16,6 +17,7 @@ import initENV
 from helpers import init_conn, compute_file_id, is_due
 
 DB_PATH = initENV.DB_PATH
+LOG_PATH = Path(initENV.SCHEDULER_LOG)
 NEXTCLOUD_DOC_DIR = initENV.NEXTCLOUD_DOC_DIR
 EXCLUDE_GLOBS = initENV.EXCLUDE_GLOBS
 MAX_JOBS_PER_PASS = initENV.MAX_JOBS_PER_PASS
@@ -37,14 +39,28 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 WORKER_SCRIPT = PROJECT_ROOT / "ingest_worker.py"
 PID_FILE = initENV.SCAN_SCHEDULER_PID_FILE
 
+def get_logger():
+    logger = logging.getLogger("scan_scheduler")
+    logger.setLevel(logging.DEBUG if initENV.DEBUG else logging.INFO)
+    if not any(isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == str(LOG_PATH.resolve())
+               for h in logger.handlers):
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        h = logging.FileHandler(LOG_PATH, encoding="utf-8")
+        h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [scan] %(message)s",
+                                         datefmt="%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(h)
+    logger.propagate = False
+    return logger
+    
 
 def _timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def log_scan(message: str):
-    ts = _timestamp()
-    print(f"[{ts}] [scan] {message}", flush=True)
+    if _LOGGER is None:
+        return
+    _LOGGER.info(message)
 
 
 def row_get(row, key, default=None):
