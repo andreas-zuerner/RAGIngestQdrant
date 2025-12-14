@@ -101,6 +101,11 @@ LOG_PATH = Path(initENV.SCHEDULER_LOG)
 
 _LOGGER: Optional[logging.Logger] = None
 
+_last_heartbeat_state = {
+    "jobs": None,
+    "count": None,
+}
+
 
 @dataclass
 class DoclingAsyncTaskState:
@@ -371,6 +376,8 @@ def refresh_active_locks(conn, job_ids: list[str]) -> int:
     active jobs so they remain owned by the current worker until completion.
     """
 
+    global _last_heartbeat_state
+
     unique_ids = sorted({jid for jid in job_ids if jid})
     if not unique_ids:
         return 0
@@ -384,9 +391,17 @@ def refresh_active_locks(conn, job_ids: list[str]) -> int:
         """,
         (WORKER_ID, *unique_ids),
     )
-    refreshed = cur.rowcount if hasattr(cur, "rowcount") else 0
-    if refreshed:
+
+    refreshed = cur.rowcount or 0
+
+    if (
+        _last_heartbeat_state["jobs"] != unique_ids
+        or _last_heartbeat_state["count"] != refreshed
+    ):
         log(f"[heartbeat] refreshed_locks={refreshed} active_jobs={unique_ids}")
+        _last_heartbeat_state["jobs"] = unique_ids
+        _last_heartbeat_state["count"] = refreshed
+
     return refreshed
 
 
