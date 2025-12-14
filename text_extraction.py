@@ -248,22 +248,23 @@ def legacy_pdf_fallback_text(file_path: Path) -> str:
 _LOGGER: Optional[logging.Logger] = None
 
 
-def _configure_debug_logger() -> Optional[logging.Logger]:
-    if not initENV.DEBUG:
-        return None
+def _configure_file_logger() -> Optional[logging.Logger]:
     try:
-        log_path = (Path("logs") / "scan_scheduler.log").resolve()
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        logger = logging.getLogger("ingest_worker")
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        log_path = LOG_PATH.resolve()
+        logger = logging.getLogger("scan")
         if not any(
             isinstance(h, logging.FileHandler)
             and getattr(h, "baseFilename", None) == str(log_path)
             for h in logger.handlers
         ):
-            logger.setLevel(logging.INFO)
+            logger.setLevel(logging.DEBUG if initENV.DEBUG else logging.INFO)
             handler = logging.FileHandler(log_path, encoding="utf-8")
             handler.setFormatter(
-                logging.Formatter("%(asctime)s [worker] [%(name)s] %(message)s")
+                logging.Formatter(
+                    "%(asctime)s [%(levelname)s] [worker] %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
             )
             logger.addHandler(handler)
         logger.propagate = False
@@ -272,19 +273,17 @@ def _configure_debug_logger() -> Optional[logging.Logger]:
         return None
 
 
-_LOGGER = _configure_debug_logger()
+_LOGGER = _configure_file_logger()
 
 WORKER_ID = f"{os.uname().nodename}-pid{os.getpid()}"
 
 def log(msg: str):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] [worker] [{WORKER_ID}] {msg}"
-    # print(line, flush=True)
-    if initENV.DEBUG and _LOGGER is not None:
-        try:
-            _LOGGER.info(f"[{WORKER_ID}] {msg}")
-        except Exception:
-            pass
+    if _LOGGER is None:
+        return
+    try:
+        _LOGGER.info(f"[{WORKER_ID}] {msg}")
+    except Exception:
+        pass
 
 
 def log_debug(msg: str):
