@@ -100,6 +100,26 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
   erkannte Bilder; letztere werden im Bilder-Ordner abgelegt und im Text mit
   eindeutigen Referenzen (`![…](<pfad>)`) vermerkt.
 
+### Office-Dokumente (ODF/Office → PDF)
+
+`text_extraction.py` wandelt klassische Office- und OpenDocument-Formate
+(`.odf`, `.odp`, `.odt`, `.odg`, `.ods`, `.odm` sowie ältere `.doc`/`.xls`)
+vor dem Senden an `docling-serve` in PDFs um. Dafür wird das CLI `soffice`
+aus LibreOffice oder OpenOffice benötigt. Installationsbeispiele:
+
+```bash
+# Debian/Ubuntu
+sudo apt-get update
+sudo apt-get install -y libreoffice libreoffice-writer libreoffice-calc
+
+# macOS (Homebrew)
+brew install --cask libreoffice
+```
+
+Das Binary `soffice` muss im `PATH` liegen; andernfalls überspringt der
+Worker die Konvertierung und schickt die Originaldatei direkt an
+`docling-serve`.
+
 ## SQLite-Web: Datenbank prüfen
 
 Um den aktuellen Zustand der SQLite-Datenbank (`DocumentDatabase/state.db`) zu
@@ -232,3 +252,8 @@ The GUI must listen on the LAN for future Dockerization. Bind to all interfaces 
    ```
 
 With `WEB_GUI_HOST=0.0.0.0`, the service is reachable from the local LAN (or Docker bridge when containerized); forward the port (e.g., `-p 8088:8088` with Docker) to reach the GUI externally.
+
+### Optional dependencies for auxiliary components
+
+- **Web GUI:** install `flask` (plus `requests`, already included above) to run `web_gui.py`.
+- **Demo Brain service (`main_brain_not_part_of_this_folder.py`):** requires `fastapi`, `httpx`, `pydantic`, `pydantic-settings`, `pypdf`, and a server such as `uvicorn` to launch the app.

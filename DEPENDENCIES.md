@@ -133,3 +133,9 @@ OpenDocument Text (`.odt`) and related formats can be placed in
 `ct109-data/scan_root/`. The ingest worker now recognises these archives, pulls
 text content from the `content.xml` payload and keeps the LLM/Brain interfaces
 unchanged.
+
+## Optional components
+
+- **Web GUI (`web_gui.py`):** install `flask` alongside `requests` to run the control panel.
+- **Demo Brain service (`main_brain_not_part_of_this_folder.py`):** install `fastapi`, `uvicorn`,
+  `httpx`, `pydantic`, `pydantic-settings`, and `pypdf` to start the example FastAPI backend.
