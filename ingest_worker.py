@@ -31,6 +31,7 @@ from text_extraction import (
     DoclingChunk,
     ExtractionFailed,
     ExtractionOutcome,
+    SUPPORTED_EXTENSIONS,
     ensure_dir,
     extract_document,
     slugify,
@@ -771,6 +772,19 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
         return None
     original_path = str(path)
     p = Path(path)
+    ext = p.suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        log(
+            f"[skip_unsupported_extension] job_id={job_id} file_id={file_id} path={p} ext={ext or '<none>'}"
+        )
+        update_file_result(
+            conn,
+            file_id,
+            {"accepted": False, "skipped": "unsupported_extension", "extension": ext or None},
+        )
+        log_decision(conn, job_id, file_id, "skip_extension", f"ext={ext or '<none>'}")
+        finish_success(conn, job_id, file_id, "skipped_unsupported_extension")
+        return None
     temp_file: Path | None = None
     size_hint = _get_field(row, "size")
     log(f"[process_path] job_id={job_id} file_id={file_id} path={p} size={size_hint} priority={_get_field(row, 'priority')}")

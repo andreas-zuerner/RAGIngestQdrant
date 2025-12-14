@@ -144,6 +144,9 @@ def schedule_next(status: str, error_count: int = 0):
         days = random.randint(25, 30)
         return (f"{normalized or 'unknown'}→retry_25-30d", timedelta(days=days))
 
+    if normalized == "skipped_unsupported_extension":
+        return ("unsupported_extension→no_retry", timedelta(days=3650))
+
     # Fallback: review in roughly one month
     days = random.randint(25, 30)
     return (f"{normalized or 'unspecified'}→retry_25-30d", timedelta(days=days))
