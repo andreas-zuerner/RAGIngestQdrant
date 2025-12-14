@@ -640,9 +640,8 @@ class DoclingServeIngestor:
             raise DoclingUnavailableError(f"docling-serve reported error: {error_msg}{suffix}")
 
     def _derive_async_url(self, service_url: str) -> str:
-        if service_url.endswith("/file"):
-            return f"{service_url[:-5]}/async"
-        return f"{service_url}/async"
+        # docling-serve nutzt /v1/convert/file/async (und /v1/convert/source/async)
+        return f"{service_url.rstrip('/')}/async"
 
     def _extract_text(self, payload: Dict[str, object]) -> str:
         doc = payload.get("document")
