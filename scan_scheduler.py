@@ -29,6 +29,8 @@ DOCLING_MAX_WORKERS = initENV.DOCLING_MAX_WORKERS
 PIPELINE_WORKERS = initENV.PIPELINE_WORKERS
 SCAN_ROOTS = (NEXTCLOUD_DOC_DIR,)
 
+_LOGGER: logging.Logger | None = None
+
 HIGH_PRIORITY_NEW = 100
 RETRY_PRIORITY_ERROR = 90
 RETRY_PRIORITY_REVIEW_SMALL = 70
@@ -408,6 +410,9 @@ def fail_running_jobs(conn, reason: str = "scheduler_stopped") -> int:
     return failed
 
 def main():
+    global _LOGGER
+    _LOGGER = get_logger()
+
     conn = init_conn(DB_PATH)
     worker_procs: list[subprocess.Popen] = []
     stop_requested = False
