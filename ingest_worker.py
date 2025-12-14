@@ -406,9 +406,7 @@ def refresh_active_locks(conn, job_ids: list[str]) -> int:
 
 
 def increment_error_count(conn, file_id: str) -> int:
-    """Atomically bump ``error_count`` and return the updated value."""
-
-    cur = conn.execute(
+    conn.execute(
         """
         UPDATE files
            SET error_count=COALESCE(error_count, 0) + 1
@@ -417,18 +415,21 @@ def increment_error_count(conn, file_id: str) -> int:
         (file_id,),
     )
 
-    if hasattr(cur, "rowcount") and cur.rowcount == 0:
-        return 1
-
     row = conn.execute(
-        "SELECT COALESCE(error_count, 1) FROM files WHERE id=?",
+        "SELECT COALESCE(error_count, 1) AS error_count FROM files WHERE id=?",
         (file_id,),
     ).fetchone()
 
-    try:
-        return int(row[0]) if row else 1
-    except Exception:
+    if not row:
         return 1
+
+    if isinstance(row, dict):
+        return int(row.get("error_count", 1))
+
+    try:
+        return int(row["error_count"])
+    except Exception:
+        return int(row[0])
 
 def finish_success(conn, job_id, file_id, status: str):
     if file_id:
