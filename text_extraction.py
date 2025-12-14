@@ -989,6 +989,13 @@ def get_docling_ingestor(async_slot_provider=None) -> DoclingServeIngestor:
             nextcloud_client = env_client()
     except Exception as exc:
         log(f"[nextcloud_client_unavailable] err={exc}")
+
+    log(f"[docling_cfg] use_async={initENV.DOCLING_SERVE_USE_ASYNC} "
+    f"service_url={initENV.DOCLING_SERVE_URL} "
+    f"async_url={initENV.DOCLING_SERVE_ASYNC_URL} "
+    f"poll_interval={initENV.DOCLING_SERVE_ASYNC_POLL_INTERVAL} "
+    f"timeout={initENV.DOCLING_SERVE_ASYNC_TIMEOUT}")
+
     return DoclingServeIngestor(
         chunk_size=initENV.MAX_CHARS,
         chunk_overlap=initENV.OVERLAP,
