@@ -360,8 +360,8 @@ def cleanup_stale(conn):
         (f"-{cutoff} seconds",),
     )
     freed = cur.rowcount if hasattr(cur, "rowcount") else 0
-    log(f"[cleanup] freed={freed} stale jobs")
     if freed:
+        log(f"[cleanup] freed={freed} stale jobs")
         log_decision(conn, None, None, "cleanup", f"freed={freed}")
     return freed
 
@@ -394,19 +394,30 @@ def refresh_active_locks(conn, job_ids: list[str]) -> int:
     return refreshed
 
 
-def next_error_count(conn, file_id: str) -> int:
+def increment_error_count(conn, file_id: str) -> int:
+    """Atomically bump ``error_count`` and return the updated value."""
+
     cur = conn.execute(
-        "SELECT COALESCE(error_count, 0) FROM files WHERE id=?",
+        """
+        UPDATE files
+           SET error_count=COALESCE(error_count, 0) + 1
+         WHERE id=?
+        """,
         (file_id,),
     )
-    row = cur.fetchone()
-    current = 0
-    if row:
-        try:
-            current = int(row[0])
-        except Exception:
-            current = 0
-    return current + 1
+
+    if hasattr(cur, "rowcount") and cur.rowcount == 0:
+        return 1
+
+    row = conn.execute(
+        "SELECT COALESCE(error_count, 1) FROM files WHERE id=?",
+        (file_id,),
+    ).fetchone()
+
+    try:
+        return int(row[0]) if row else 1
+    except Exception:
+        return 1
 
 def finish_success(conn, job_id, file_id, status: str):
     if file_id:
@@ -443,7 +454,7 @@ def finish_error(conn, job_id, file_id, status: str, msg):
     message = str(msg)[:500]
     log(f"[finish_error] job_id={job_id} file_id={file_id} status={status} message={message}")
     if file_id:
-        error_count = next_error_count(conn, file_id)
+        error_count = increment_error_count(conn, file_id)
         next_review_at, review_reason = compute_next_review_at(status, error_count=error_count)
         conn.execute(
             """
@@ -971,6 +982,7 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     try:
         log_decision(conn, job_id, file_id, "stage_embedding", "sending chunks to brain")
         chunk_outcome = []
+        ingested_at = datetime.utcnow().isoformat() + "Z"
         for idx, chunk in enumerate(chunks):
             chunk_meta = {
                 "chunk_index": chunk.meta.get("chunk_index", idx),
@@ -980,8 +992,8 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
                 "source": "RAGIngestQdrant",
                 "document_name": document_name,
                 "original_path": stage.original_path,
-                "temp_path": temp_path,
                 "temp_name": temp_name,
+                "ingested_at": ingested_at,
             }
             for key in ("page_start", "page_end", "section"):
                 value = chunk.meta.get(key)
