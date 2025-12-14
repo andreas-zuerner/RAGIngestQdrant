@@ -531,11 +531,11 @@ class DoclingServeIngestor:
                 api_root = m[0]
 
             poll_url = (
-                submission.get("result_url")
-                or submission.get("status_url")
+                submission.get("status_url")
                 or submission.get("poll_url")
-                or (f"{api_root}/v1/result/{job_id}" if job_id else None)
+                or submission.get("result_url")
                 or (f"{api_root}/v1/status/poll/{job_id}" if job_id else None)
+                or (f"{api_root}/v1/result/{job_id}" if job_id else None)
             )
 
             if not poll_url:
@@ -558,6 +558,13 @@ class DoclingServeIngestor:
                 task_state.attempts += 1
                 try:
                     poll_response = requests.get(poll_url, timeout=DOCLING_SERVE_TIMEOUT)
+                    if poll_response.status_code in (202, 404):
+                        # 202 = accepted/pending, 404 = result not ready / task not visible
+                        # weiter warten statt abbrechen
+                        if time.time() > deadline:
+                            break
+                        continue
+                    
                     poll_response.raise_for_status()
                 except Exception as exc:
                     last_error = exc
