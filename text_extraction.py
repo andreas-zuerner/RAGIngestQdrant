@@ -563,8 +563,17 @@ class DoclingServeIngestor:
                         # weiter warten statt abbrechen
                         if time.time() > deadline:
                             break
+
+                        next_interval = min(
+                            next_interval * 2, max_interval if max_interval > 0 else next_interval
+                        )
+                        task_state.next_interval = next_interval
+                        log_debug(
+                            f"[docling_async_poll_pending] url={poll_url} status={poll_response.status_code} "
+                            f"attempt={task_state.attempts} next_interval={round(next_interval, 2)}s"
+                        )
                         continue
-                    
+
                     poll_response.raise_for_status()
                 except Exception as exc:
                     last_error = exc
@@ -594,6 +603,10 @@ class DoclingServeIngestor:
 
                 next_interval = min(next_interval * 2, max_interval if max_interval > 0 else next_interval)
                 task_state.next_interval = next_interval
+                log_debug(
+                    f"[docling_async_poll_retry] url={poll_url} attempt={task_state.attempts} "
+                    f"next_interval={round(next_interval, 2)}s"
+                )
 
             suffix = f"; last_error={last_error}" if last_error else ""
             raise DoclingUnavailableError(
