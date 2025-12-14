@@ -208,7 +208,7 @@ _NEXTCLOUD_CLIENT: NextcloudClient | None = None
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] [worker] [{WORKER_ID}] {msg}"
-    print(line, flush=True)
+    # print(line, flush=True)
     if DEBUG and _LOGGER is not None:
         try:
             _LOGGER.info(f"[{WORKER_ID}] {msg}")
