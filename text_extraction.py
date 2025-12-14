@@ -407,8 +407,15 @@ class DoclingServeIngestor:
 
         if payload is None:
             if async_error:
-                log_debug(f"[docling_async_fallback_sync] path={file_path} err={async_error}")
-            payload = self._extract_sync(file_path)
+                log(f"[docling_async_fallback_sync] path={file_path} err={async_error}")
+            try:
+                payload = self._extract_sync(file_path)
+            except Exception as exc:
+                if async_error:
+                    raise RuntimeError(
+                        f"sync extraction failed after async failure: {async_error}"
+                    ) from exc
+                raise
 
         text = self._extract_text(payload)
         base_slug = slugify(file_path.stem)
