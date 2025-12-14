@@ -569,6 +569,11 @@ class DoclingServeIngestor:
                     time.sleep(sleep_for)
 
                 task_state.attempts += 1
+                _log_poll_progress(
+                    task_state,
+                    f"[docling_async_poll_attempt] url={poll_url} attempt={task_state.attempts} "
+                    f"next_interval={round(next_interval, 2)}s",
+                )
                 try:
                     poll_response = requests.get(poll_url, timeout=DOCLING_SERVE_TIMEOUT)
                     if poll_response.status_code in (202, 404):
