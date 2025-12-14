@@ -525,6 +525,20 @@ class DoclingServeIngestor:
             except Exception as exc:
                 raise RuntimeError("docling-serve async submit returned invalid JSON") from exc
 
+            # Lightweight instrumentation: helps to verify whether polling is reached.
+            if isinstance(submission, dict):
+                _job_id = submission.get("job_id") or submission.get("task_id") or submission.get("id")
+                _poll_hint = (
+                    submission.get("status_url") or submission.get("poll_url") or submission.get("result_url")
+                )
+                log(f"[docling_async_submit_ok] url={submit_url} job_id={_job_id} keys={list(submission.keys())}")
+                log(
+                    "[docling_async_submit_payload_probe] "
+                    f"has_document={'document' in submission} has_result={'result' in submission} poll_hint={_poll_hint}"
+                )
+            else:
+                log(f"[docling_async_submit_ok] url={submit_url} type={type(submission).__name__}")
+
             self._ensure_no_docling_error(submission)
             payload = self._maybe_extract_payload(submission)
             if payload:
@@ -651,13 +665,29 @@ class DoclingServeIngestor:
             yield state
 
     def _maybe_extract_payload(self, payload: Dict[str, object]) -> Optional[Dict[str, object]]:
+        """Return a *final* extraction payload if present, otherwise None.
+
+        Important: some async APIs return an early envelope that may already contain a
+        "document" key but without any extracted content. Treating that as final would
+        silently skip polling.
+        """
         if not isinstance(payload, dict):
             return None
         if payload.get("error"):
             detail = payload.get("detail") or payload.get("message") or payload.get("error")
             raise DoclingUnavailableError(f"docling-serve reported error: {detail}")
-        if payload.get("document"):
-            return payload
+
+        doc = payload.get("document")
+        if isinstance(doc, dict):
+            # Only treat as final when actual content is present
+            for key in ("md_content", "text_content", "html_content", "json_content"):
+                value = doc.get(key)
+                if isinstance(value, str) and value.strip():
+                    return payload
+            media = payload.get("media") or {}
+            if isinstance(media, dict) and media.get("images"):
+                return payload
+
         result = payload.get("result")
         if isinstance(result, dict) and (result.get("document") or result.get("media")):
             self._ensure_no_docling_error(result)
@@ -680,9 +710,12 @@ class DoclingServeIngestor:
             raise DoclingUnavailableError(f"docling-serve reported error: {error_msg}{suffix}")
 
     def _derive_async_url(self, service_url: str) -> str:
-        if service_url.endswith("/file"):
-            return f"{service_url[:-5]}/async"
-        return f"{service_url}/async"
+        """Best-effort async endpoint derivation.
+
+        Prefer setting DOCLING_SERVE_ASYNC_URL explicitly. If we must derive, keep the
+        original path and append `/async` (common for `/.../file` style endpoints).
+        """
+        return f"{service_url.rstrip('/')}/async"
 
     def _extract_text(self, payload: Dict[str, object]) -> str:
         doc = payload.get("document")
