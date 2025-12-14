@@ -174,25 +174,26 @@ _DOC_EXTRACTION_MANAGER = DoclingAsyncManager(max_parallel=DOCLING_MAX_WORKERS)
 
 
 def _configure_file_logger() -> Optional[logging.Logger]:
-     try:
-         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-         log_path = LOG_PATH.resolve()
-         logger = logging.getLogger("scan")
-
-    if not any(isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == str(log_path)
-        for h in logger.handlers
-    ):
-        logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
-        handler = logging.FileHandler(log_path, encoding="utf-8")
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] [worker] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
-        logger.addHandler(handler)
-
-    logger.propagate = False
-    return logger
-
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        log_path = LOG_PATH.resolve()
+        logger = logging.getLogger("scan")
+        if not any(
+            isinstance(h, logging.FileHandler)
+            and getattr(h, "baseFilename", None) == str(log_path)
+            for h in logger.handlers
+        ):
+            logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
+            handler = logging.FileHandler(log_path, encoding="utf-8")
+            handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s [%(levelname)s] [worker] %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
+            )
+            logger.addHandler(handler)
+        logger.propagate = False
+        return logger
     except Exception:
         return None
 
@@ -200,7 +201,7 @@ _LOGGER = _configure_file_logger()
 
 _NEXTCLOUD_CLIENT: NextcloudClient | None = None
 
-def log(msg):
+def log(msg: str):
     if _LOGGER is None:
         return
     try:
