@@ -291,6 +291,14 @@ def log_debug(msg: str):
         log(msg)
 
 
+def _log_poll_progress(task_state, msg: str):
+    """Log async poll progress even when DEBUG is off (first + every 5th attempt)."""
+
+    attempts = getattr(task_state, "attempts", 0)
+    if initENV.DEBUG or attempts in {1, 5} or attempts % 5 == 0:
+        log(msg)
+
+
 def sanitize_images(images: List[Dict[str, object]]) -> List[Dict[str, object]]:
     sanitized = []
     for img in images or []:
@@ -545,6 +553,11 @@ class DoclingServeIngestor:
             next_interval = self.poll_interval
             last_error: Exception | None = None
 
+            log(
+                f"[docling_async_poll_start] url={poll_url} initial_interval={self.poll_interval}s "
+                f"timeout={self.async_timeout}s"
+            )
+
             while True:
                 now = time.time()
                 # Ensure the very first poll respects the configured poll interval
@@ -568,9 +581,10 @@ class DoclingServeIngestor:
                             next_interval * 2, max_interval if max_interval > 0 else next_interval
                         )
                         task_state.next_interval = next_interval
-                        log_debug(
+                        _log_poll_progress(
+                            task_state,
                             f"[docling_async_poll_pending] url={poll_url} status={poll_response.status_code} "
-                            f"attempt={task_state.attempts} next_interval={round(next_interval, 2)}s"
+                            f"attempt={task_state.attempts} next_interval={round(next_interval, 2)}s",
                         )
                         continue
 
@@ -603,9 +617,10 @@ class DoclingServeIngestor:
 
                 next_interval = min(next_interval * 2, max_interval if max_interval > 0 else next_interval)
                 task_state.next_interval = next_interval
-                log_debug(
+                _log_poll_progress(
+                    task_state,
                     f"[docling_async_poll_retry] url={poll_url} attempt={task_state.attempts} "
-                    f"next_interval={round(next_interval, 2)}s"
+                    f"next_interval={round(next_interval, 2)}s",
                 )
 
             suffix = f"; last_error={last_error}" if last_error else ""
