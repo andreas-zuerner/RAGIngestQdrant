@@ -37,8 +37,6 @@ from text_extraction import (
     slugify,
 )
 
-
-
 # --- safe logger to avoid crashes during instrumentation ---
 _log_counters = {}  # (job_id) -> count
 
@@ -54,7 +52,6 @@ def safe_log(conn, job_id, file_id, step, detail):
         log_decision(conn, job_id, file_id, step, detail[:500])  # detail begrenzen
     except Exception:
         pass
-
 
 # === Config (ENV) ===
 DB_PATH = initENV.DB_PATH
@@ -748,23 +745,42 @@ def brain_ingest_text(
             )
         r.raise_for_status()
         return r.json()
-    except Exception as e:
+    except requests.HTTPError as e:
+        # HTTP status errors (e.g., 400 Bad Request). Keep the response details.
         if dbg_on and dbg_base:
-            from traceback import format_exc
-            (dbg_base.with_suffix(".error.json")).write_text(format_exc(), encoding="utf-8")
+            try:
+                resp = getattr(e, "response", None)
+                http_dump = {
+                    "error_type": "HTTPError",
+                    "error": repr(e),
+                    "url": url,
+                    "status": getattr(resp, "status_code", None),
+                    "response_headers": dict(getattr(resp, "headers", {}) or {}),
+                    "response_body_head": (getattr(resp, "text", "") or "")[:8000],
+                }
+                (dbg_base.with_suffix(".http_error.json")).write_text(
+                    json.dumps(http_dump, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except Exception:
+                pass
         raise
     except Exception as e:
+        # Non-HTTP exceptions: network errors, timeouts, JSON parse errors, etc.
         if dbg_on and dbg_base:
-            err_dump = {"error": repr(e)}
-            (dbg_base.with_suffix(".error.json")).write_text(
-                json.dumps(err_dump, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            try:
+                err_dump = {
+                    "error_type": type(e).__name__,
+                    "error": repr(e),
+                    "traceback": traceback.format_exc()[:20000],
+                }
+                (dbg_base.with_suffix(".error.json")).write_text(
+                    json.dumps(err_dump, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except Exception:
+                pass
         raise
-
-
 
 # === Worker logic ===
-
 
 def _get_field(row, key_or_idx, fallback=None):
     if row is None:
@@ -778,8 +794,6 @@ def _get_field(row, key_or_idx, fallback=None):
             return row[int(key_or_idx)]
         except Exception:
             return fallback
-
-
 
 def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResult | None:
     from pathlib import Path
@@ -885,8 +899,6 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
         str(temp_file) if temp_file else None,
         temp_name,
     )
-
-
 
 def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     job_id = stage.job_id
