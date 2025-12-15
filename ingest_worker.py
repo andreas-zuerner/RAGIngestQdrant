@@ -921,14 +921,6 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
             safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
             raise RuntimeError("OLLAMA disabled")
 
-        # AI-score debug goes into a dedicated subfolder
-        ai_score_dbg_dir: Optional[Path] = None
-        if DEBUG and doc_dbg_dir:
-            try:
-                ai_score_dbg_dir = ensure_dir(doc_dbg_dir / "ai_score")
-            except Exception:
-                ai_score_dbg_dir = None
-
         log_decision(conn, job_id, file_id, "stage_relevance", "running relevance check")
         log(f"[ai_score_start] job_id={job_id} file_id={file_id} len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
         safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
@@ -939,7 +931,7 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
             timeout=600,
             debug=DEBUG,
             dbg_root=Path("./debug"),
-            dbg_dir=ai_score_dbg_dir,
+            dbg_dir=doc_dbg_dir,
         )
         is_rel = bool(ai.get("is_relevant"))
         conf = float(ai.get("confidence", 0.0))
@@ -992,6 +984,32 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         chunk_source = "docling_fallback"
         safe_log(conn, job_id, file_id, "chunking_fallback", "used docling chunks due to empty LLM output")
 
+    # === DEBUG: write ONE file with ALL chunks (NO context), untruncated ===
+    if DEBUG and doc_dbg_dir:
+        try:
+            out_path = doc_dbg_dir / "chunks_all.txt"
+            total = len(chunk_texts or [])
+            with out_path.open("w", encoding="utf-8", newline="\n") as f:
+                f.write("# chunks_all.txt (NO context)\n")
+                f.write(f"# job_id={job_id}\n")
+                f.write(f"# file_id={file_id}\n")
+                f.write(f"# document_name={document_name}\n")
+                f.write(f"# original_path={stage.original_path}\n")
+                f.write(f"# chunk_source={chunk_source}\n")
+                f.write(f"# chunks_total={total}\n")
+                f.write("\n")
+                for i, t in enumerate(chunk_texts or []):
+                    txt = t if t is not None else ""
+                    f.write("=" * 80 + "\n")
+                    f.write(f"CHUNK {i+1:04d}/{total:04d}  chars={len(txt)}\n")
+                    f.write("=" * 80 + "\n")
+                    f.write(txt)
+                    if not txt.endswith("\n"):
+                        f.write("\n")
+                    f.write("\n")
+        except Exception:
+            pass
+    
     log(f"[add_context_start] job_id={job_id} file_id={file_id} chunks={len(chunk_texts)}")
     log_decision(conn, job_id, file_id, "stage_context", "adding context")
     chunks = enrich_chunks_with_context(
@@ -1002,14 +1020,6 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         timeout=BRAIN_REQUEST_TIMEOUT,
         debug=DEBUG,
     )
-
-    # === DEBUG: persist final chunks to /debug/chunks ===
-    chunks_dbg_dir: Optional[Path] = None
-    if DEBUG and stage.doc_dbg_dir:
-        try:
-            chunks_dbg_dir = ensure_dir(stage.doc_dbg_dir / "chunks")
-        except Exception:
-            chunks_dbg_dir = None
 
     errors = []
     for idx, chunk in enumerate(chunks):
@@ -1026,19 +1036,6 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         chunk_outcome = []
         ingested_at = datetime.utcnow().isoformat() + "Z"
         for idx, chunk in enumerate(chunks):
-            # Write chunk debug artifacts (even if empty), before any network calls
-            if DEBUG and chunks_dbg_dir:
-                try:
-                    from json import dumps
-                    chunk_txt = chunk.text if chunk.text is not None else ""
-                    (chunks_dbg_dir / f"chunk_{idx:04d}.txt").write_text(chunk_txt, encoding="utf-8")
-                    (chunks_dbg_dir / f"chunk_{idx:04d}.meta.json").write_text(
-                        dumps(chunk.meta or {}, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                except Exception:
-                    pass
-
             chunk_meta = {
                 "chunk_index": chunk.meta.get("chunk_index", idx),
                 "chunks_total": len(chunks),
@@ -1076,7 +1073,8 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
                     meta=chunk_meta,
                     collection=BRAIN_COLLECTION,
                     timeout=BRAIN_REQUEST_TIMEOUT,
-                    debug=DEBUG,
+                    # Keep debug output clean: user wants a single chunks_all.txt file.
+                    debug=False,
                     dbg_dir=stage.doc_dbg_dir,
                     dbg_root=Path("./debug"),
                 )
