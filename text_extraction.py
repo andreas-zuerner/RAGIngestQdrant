@@ -592,8 +592,6 @@ class DoclingServeIngestor:
                 try:
                     poll_response = requests.get(poll_url, timeout=DOCLING_SERVE_TIMEOUT)
                     if poll_response.status_code in (202, 404):
-                        # 202 = accepted/pending, 404 = result not ready / task not visible
-                        # weiter warten statt abbrechen
                         if time.time() > deadline:
                             break
 
@@ -601,11 +599,15 @@ class DoclingServeIngestor:
                             next_interval * 2, max_interval if max_interval > 0 else next_interval
                         )
                         task_state.next_interval = next_interval
+
                         _log_poll_progress(
                             task_state,
                             f"[docling_async_poll_pending] url={poll_url} status={poll_response.status_code} "
                             f"attempt={task_state.attempts} next_interval={round(next_interval, 2)}s",
                         )
+
+                        time.sleep(next_interval)   # <-- DAS fehlt/ist entscheidend
+                        task_state.attempts += 1    # <-- falls nicht bereits am Loop-Anfang gemacht
                         continue
 
                     poll_response.raise_for_status()
