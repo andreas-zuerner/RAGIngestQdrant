@@ -867,7 +867,8 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
     doc_dbg_dir: Optional[Path] = None
     if DEBUG and debug_dir:
         try:
-            doc_dbg_dir = ensure_dir(debug_dir / "ai_score")
+            # debug_dir is document-specific; keep it as root debug dir
+            doc_dbg_dir = ensure_dir(debug_dir)
         except Exception:
             doc_dbg_dir = None
 
@@ -907,6 +908,15 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         if not OLLAMA_HOST:
             safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
             raise RuntimeError("OLLAMA disabled")
+
+        # AI-score debug goes into a dedicated subfolder
+        ai_score_dbg_dir: Optional[Path] = None
+        if DEBUG and doc_dbg_dir:
+            try:
+                ai_score_dbg_dir = ensure_dir(doc_dbg_dir / "ai_score")
+            except Exception:
+                ai_score_dbg_dir = None
+
         log_decision(conn, job_id, file_id, "stage_relevance", "running relevance check")
         log(f"[ai_score_start] job_id={job_id} file_id={file_id} len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
         safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
@@ -917,7 +927,7 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
             timeout=600,
             debug=DEBUG,
             dbg_root=Path("./debug"),
-            dbg_dir=doc_dbg_dir,
+            dbg_dir=ai_score_dbg_dir,
         )
         is_rel = bool(ai.get("is_relevant"))
         conf = float(ai.get("confidence", 0.0))
@@ -981,6 +991,14 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         debug=DEBUG,
     )
 
+    # === DEBUG: persist final chunks to /debug/chunks ===
+    chunks_dbg_dir: Optional[Path] = None
+    if DEBUG and stage.doc_dbg_dir:
+        try:
+            chunks_dbg_dir = ensure_dir(stage.doc_dbg_dir / "chunks")
+        except Exception:
+            chunks_dbg_dir = None
+
     errors = []
     for idx, chunk in enumerate(chunks):
         if chunk.error:
@@ -996,6 +1014,19 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         chunk_outcome = []
         ingested_at = datetime.utcnow().isoformat() + "Z"
         for idx, chunk in enumerate(chunks):
+            # Write chunk debug artifacts (even if empty), before any network calls
+            if DEBUG and chunks_dbg_dir:
+                try:
+                    from json import dumps
+                    chunk_txt = chunk.text if chunk.text is not None else ""
+                    (chunks_dbg_dir / f"chunk_{idx:04d}.txt").write_text(chunk_txt, encoding="utf-8")
+                    (chunks_dbg_dir / f"chunk_{idx:04d}.meta.json").write_text(
+                        dumps(chunk.meta or {}, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+
             chunk_meta = {
                 "chunk_index": chunk.meta.get("chunk_index", idx),
                 "chunks_total": len(chunks),
@@ -1007,6 +1038,14 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
                 "temp_name": temp_name,
                 "ingested_at": ingested_at,
             }
+
+            # Skip empty / whitespace-only chunks to avoid 400 from brain ingest endpoint
+            if not (chunk.text or "").strip():
+                safe_log(conn, job_id, file_id, "chunk_empty_skip", f"chunk={idx}")
+                chunk_meta["skipped"] = "empty"
+                chunk_outcome.append(chunk_meta)
+                continue
+
             for key in ("page_start", "page_end", "section"):
                 value = chunk.meta.get(key)
                 if value is not None:
