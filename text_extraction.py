@@ -33,6 +33,9 @@ from nextcloud_client import NextcloudClient, env_client
 
 import initENV
 
+# Central log file used by the scan scheduler and ingest workers.
+# Must be defined before the module-level logger is configured.
+LOG_PATH = Path(getattr(initENV, "SCHEDULER_LOG", "logs/scan_scheduler.log"))
 
 class DoclingUnavailableError(RuntimeError):
     """Raised when docling is missing at runtime."""
@@ -1146,5 +1149,4 @@ NEXTCLOUD_TOKEN = initENV.NEXTCLOUD_TOKEN
 DECISION_LOG_ENABLED = initENV.DECISION_LOG_ENABLED
 DECISION_LOG_MAX_PER_JOB = initENV.DECISION_LOG_MAX_PER_JOB
 WORKER_ID = f"{os.uname().nodename}-pid{os.getpid()}"
-LOG_PATH = Path("logs") / "scan_scheduler.log"
 
