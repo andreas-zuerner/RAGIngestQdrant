@@ -149,7 +149,7 @@
     <div class="search-layout">
       <div class="search-box">
         <form method="post" action="{{ url_for('search') }}">
-          <label>Document name contains:</label>
+          <label>Meta data contains:</label>
           <div style="display: flex; gap: 8px; align-items: center;">
             <input type="text" name="search_term" value="{{ search_term or '' }}" style="flex:1" />
             <button type="submit">Search</button>
