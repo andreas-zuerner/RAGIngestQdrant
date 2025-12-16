@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 import time
 import unicodedata
+import fcntl
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -45,52 +46,31 @@ class ExtractionFailed(RuntimeError):
     """Raised when the extraction pipeline cannot produce text."""
 
 
-CONVERT_BEFORE_DOCLING = {".xls", ".doc", ".odf", ".odp", ".odt", ".odg", ".ods", ".odm"}
-SUPPORTED_EXTENSIONS = {
-    ".docx",
-    ".dotx",
-    ".docm",
-    ".dotm",
-    ".pptx",
-    ".potx",
-    ".ppsx",
-    ".pptm",
-    ".potm",
-    ".ppsm",
-    ".pdf",
-    ".md",
-    ".html",
-    ".htm",
-    ".xhtml",
-    ".xml",
-    ".nxml",
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".tif",
-    ".tiff",
-    ".bmp",
-    ".webp",
-    ".adoc",
-    ".asciidoc",
-    ".asc",
-    ".csv",
-    ".xlsx",
-    ".xlsm",
-    ".txt",
-    ".json",
-    ".wav",
-    ".mp3",
-    ".m4a",
-    ".aac",
-    ".ogg",
-    ".flac",
-    ".mp4",
-    ".avi",
-    ".mov",
-    ".vtt",
-}
-SUPPORTED_EXTENSIONS |= CONVERT_BEFORE_DOCLING
+STANDARD_EXTENSIONS = set(initENV.FILE_TYPES_STANDARD)
+SOFFICE_EXTENSIONS = set(initENV.FILE_TYPES_SOFFICE if initENV.ENABLE_SOFFICE_TYPES else set())
+MS_EXTENDED_EXTENSIONS = set(
+    initENV.FILE_TYPES_MS_EXTENDED if initENV.ENABLE_MS_EXTENDED_TYPES else set()
+)
+AUDIO_EXTENSIONS = set(initENV.FILE_TYPES_AUDIO if initENV.ENABLE_AUDIO_TYPES else set())
+
+CONVERT_BEFORE_DOCLING = set(SOFFICE_EXTENSIONS)
+DOCILING_EXTENSIONS = set(STANDARD_EXTENSIONS | CONVERT_BEFORE_DOCLING)
+SUPPORTED_EXTENSIONS = set(
+    STANDARD_EXTENSIONS | SOFFICE_EXTENSIONS | MS_EXTENDED_EXTENSIONS | AUDIO_EXTENSIONS
+)
+
+
+def extension_category(ext: str) -> str:
+    ext = (ext or "").lower()
+    if ext in STANDARD_EXTENSIONS:
+        return "standard"
+    if ext in SOFFICE_EXTENSIONS:
+        return "soffice"
+    if ext in MS_EXTENDED_EXTENSIONS:
+        return "ms_extended"
+    if ext in AUDIO_EXTENSIONS:
+        return "audio"
+    return "unknown"
 
 
 def ensure_dir(path: Path) -> Path:
@@ -119,6 +99,21 @@ def _optional_import(name: str):
 def _dbg_write(target: Path, content: str):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content or "", encoding="utf-8")
+
+
+@contextmanager
+def _exclusive_soffice():
+    """Prevent concurrent soffice conversions across processes."""
+
+    lock_path = Path(os.environ.get("SOFFICE_LOCK_FILE", "/tmp/soffice-convert.lock"))
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lock_file:
+        log_debug(f"[soffice_lock_wait] lock={lock_path}")
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def convert_for_docling(file_path: Path) -> Tuple[Path, Optional[Path]]:
@@ -159,7 +154,8 @@ def convert_for_docling(file_path: Path) -> Tuple[Path, Optional[Path]]:
             str(temp_dir),
             str(file_path),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        with _exclusive_soffice():
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if proc.returncode != 0:
             log(
                 f"[convert_failed] source={file_path} rc={proc.returncode} "
@@ -246,6 +242,55 @@ def legacy_pdf_fallback_text(file_path: Path) -> str:
             text_candidates.append(ocr_text)
     combined = "\n\n".join(text_candidates).strip()
     return combined
+
+
+def _detect_encoding(data: bytes) -> Optional[str]:
+    normalizer = _optional_import("charset_normalizer")
+    if normalizer is not None:
+        try:
+            result = normalizer.from_bytes(data).best()
+            if result and result.encoding:
+                return result.encoding
+        except Exception:
+            pass
+    chardet = _optional_import("chardet")
+    if chardet is not None:
+        try:
+            detected = chardet.detect(data)
+            encoding = detected.get("encoding") if isinstance(detected, dict) else None
+            if encoding:
+                return str(encoding)
+        except Exception:
+            pass
+    return None
+
+
+def generic_text_fallback(file_path: Path) -> str:
+    """Attempt to read text directly from the file using encoding detection."""
+
+    if not file_path.exists():
+        return ""
+
+    try:
+        raw = file_path.read_bytes()
+    except Exception:
+        return ""
+
+    candidates = [_detect_encoding(raw), "utf-8", "utf-8-sig", "latin-1", "cp1252"]
+    for enc in candidates:
+        if not enc:
+            continue
+        try:
+            text = raw.decode(enc)
+            if text.strip():
+                return text
+        except Exception:
+            continue
+
+    try:
+        return raw.decode(errors="ignore")
+    except Exception:
+        return ""
 
 
 _LOGGER: Optional[logging.Logger] = None
@@ -1040,32 +1085,49 @@ def extract_document(
         except Exception:
             debug_dir = None
 
+    category = extension_category(p.suffix)
     docling_path = p
-    try:
-        docling_path, conversion_dir = convert_for_docling(p)
-    except Exception as exc:
-        docling_path = p
-        log(f"[convert_for_docling_error] source={p} err={exc}")
-        conversion_dir = None
+    conversion_dir: Optional[Path] = None
+    docling_error: Optional[Exception] = None
+    docling_source = "docling-serve"
+    docling_attempted = False
+
+    if category == "soffice":
+        try:
+            docling_path, conversion_dir = convert_for_docling(p)
+        except Exception as exc:
+            docling_path = p
+            docling_error = exc
+            log(f"[convert_for_docling_error] source={p} err={exc}")
 
     try:
         size = docling_path.stat().st_size
-        log(f"[extract_start] job_id={job_id} file_id={file_id} path={docling_path} size={size} original={p}")
+        log(
+            f"[extract_start] job_id={job_id} file_id={file_id} path={docling_path} "
+            f"size={size} original={p} category={category}"
+        )
         ingestor = get_docling_ingestor(async_slot_provider=async_slot_provider)
 
         extraction: Optional[DoclingExtraction] = None
-        docling_error: Optional[Exception] = None
-        docling_source = "docling-serve"
-        try:
-            extraction = ingestor.extract(
-                docling_path,
-                upload_images=False,
-                debug=initENV.DEBUG,
-                debug_dir=debug_dir,
+        if category in {"standard", "soffice"}:
+            docling_attempted = True
+            try:
+                extraction = ingestor.extract(
+                    docling_path,
+                    upload_images=False,
+                    debug=initENV.DEBUG,
+                    debug_dir=debug_dir,
+                )
+            except Exception as exc:
+                docling_error = exc
+                log(
+                    f"[extract_error] job_id={job_id} file_id={file_id} path={docling_path} "
+                    f"err={exc}"
+                )
+        else:
+            log(
+                f"[docling_skip_category] job_id={job_id} file_id={file_id} category={category} path={p}"
             )
-        except Exception as exc:
-            docling_error = exc
-            log(f"[extract_error] job_id={job_id} file_id={file_id} path={docling_path} err={exc}")
 
         if extraction is None and docling_path.suffix.lower() == ".pdf":
             log(
@@ -1090,6 +1152,23 @@ def extract_document(
                     slug=slugify(p.stem),
                 )
                 docling_source = "pdf_fallback"
+
+        if extraction is None:
+            fallback_text = generic_text_fallback(p)
+            if fallback_text:
+                log(
+                    f"[extract_generic_fallback] job_id={job_id} file_id={file_id} "
+                    f"category={category} text_len={len(fallback_text)} docling_attempted={docling_attempted}"
+                )
+                chunks = ingestor._chunk_text(fallback_text)
+                extraction = DoclingExtraction(
+                    text=fallback_text,
+                    mime_type="text/plain",
+                    chunks=chunks,
+                    images=[],
+                    slug=slugify(p.stem),
+                )
+                docling_source = "text_fallback"
 
         if extraction is None:
             raise ExtractionFailed(f"docling_failed: {docling_error}")

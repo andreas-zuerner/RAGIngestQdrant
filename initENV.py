@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Dict, Iterable
+from typing import Dict, Iterable, Set
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
@@ -54,6 +54,18 @@ def env_list(key: str, default: Iterable[str] | None = None, *, sep: str = ",") 
     return [item for item in value.split(sep) if item]
 
 
+def _normalize_extensions(values: Iterable[str]) -> Set[str]:
+    normalized: Set[str] = set()
+    for raw in values:
+        ext = (raw or "").strip().lower()
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = f".{ext}"
+        normalized.add(ext)
+    return normalized
+
+
 # Initialize environment on import
 load_env()
 
@@ -85,6 +97,79 @@ IDLE_SLEEP_S = env_float("IDLE_SLEEP_S", 1.0)
 PDFTOTEXT_TIMEOUT_S = env_int("PDFTOTEXT_TIMEOUT_S", 60)
 PDF_OCR_MAX_PAGES = env_int("PDF_OCR_MAX_PAGES", 20)
 PDF_OCR_DPI = env_int("PDF_OCR_DPI", 300)
+
+# File type configuration
+FILE_TYPES_STANDARD = _normalize_extensions(
+    env_list(
+        "FILE_TYPES_STANDARD",
+        default=[
+            "docx",
+            "pptx",
+            "html",
+            "htm",
+            "xhtml",
+            "pdf",
+            "md",
+            "csv",
+            "xlsx",
+            "xml",
+            "json",
+            "vtt",
+            "jpg",
+            "jpeg",
+            "png",
+            "tif",
+            "tiff",
+            "bmp",
+            "webp",
+        ],
+    )
+)
+
+FILE_TYPES_SOFFICE = _normalize_extensions(
+    env_list(
+        "FILE_TYPES_SOFFICE",
+        default=[".xls", ".doc", ".odf", ".odp", ".odt", ".odg", ".ods", ".odm"],
+    )
+)
+
+FILE_TYPES_MS_EXTENDED = _normalize_extensions(
+    env_list(
+        "FILE_TYPES_MS_EXTENDED",
+        default=[
+            ".dotx",
+            ".docm",
+            ".dotm",
+            ".potx",
+            ".ppsx",
+            ".pptm",
+            ".potm",
+            ".ppsm",
+            ".xlsm",
+        ],
+    )
+)
+
+FILE_TYPES_AUDIO = _normalize_extensions(
+    env_list(
+        "FILE_TYPES_AUDIO",
+        default=[
+            ".wav",
+            ".mp3",
+            ".m4a",
+            ".aac",
+            ".ogg",
+            ".flac",
+            ".mp4",
+            ".avi",
+            ".mov",
+        ],
+    )
+)
+
+ENABLE_SOFFICE_TYPES = env_bool("ENABLE_SOFFICE_TYPES", True)
+ENABLE_MS_EXTENDED_TYPES = env_bool("ENABLE_MS_EXTENDED_TYPES", False)
+ENABLE_AUDIO_TYPES = env_bool("ENABLE_AUDIO_TYPES", False)
 
 DOCLING_SERVE_URL = os.environ.get("DOCLING_SERVE_URL", "http://192.168.177.130:5001/v1/convert/file")
 DOCLING_SERVE_TIMEOUT = env_float("DOCLING_SERVE_TIMEOUT", 300)
