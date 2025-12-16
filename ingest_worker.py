@@ -33,6 +33,7 @@ from text_extraction import (
     ExtractionOutcome,
     SUPPORTED_EXTENSIONS,
     ensure_dir,
+    extension_category,
     extract_document,
     slugify,
 )
@@ -810,18 +811,14 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
     original_path = str(path)
     p = Path(path)
     ext = p.suffix.lower()
+    category = extension_category(ext)
     if ext not in SUPPORTED_EXTENSIONS:
         log(
-            f"[skip_unsupported_extension] job_id={job_id} file_id={file_id} path={p} ext={ext or '<none>'}"
+            f"[process_unknown_extension] job_id={job_id} file_id={file_id} path={p} ext={ext or '<none>'} category={category}"
         )
-        update_file_result(
-            conn,
-            file_id,
-            {"accepted": False, "skipped": "unsupported_extension", "extension": ext or None},
-        )
-        log_decision(conn, job_id, file_id, "skip_extension", f"ext={ext or '<none>'}")
-        finish_success(conn, job_id, file_id, "skipped_unsupported_extension")
-        return None
+        log_decision(conn, job_id, file_id, "extension_fallback", f"ext={ext or '<none>'}")
+    else:
+        log_decision(conn, job_id, file_id, "extension_category", f"category={category}")
     temp_file: Path | None = None
     size_hint = _get_field(row, "size")
     log(f"[process_path] job_id={job_id} file_id={file_id} path={p} size={size_hint} priority={_get_field(row, 'priority')}")
