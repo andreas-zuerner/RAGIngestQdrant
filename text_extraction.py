@@ -57,7 +57,7 @@ TABLE_EXTENSIONS = set(initENV.FILE_TYPES_TABLE)
 CONVERT_BEFORE_DOCLING = set(SOFFICE_EXTENSIONS)
 DOCILING_EXTENSIONS = set(STANDARD_EXTENSIONS | CONVERT_BEFORE_DOCLING)
 SUPPORTED_EXTENSIONS = set(
-    STANDARD_EXTENSIONS | SOFFICE_EXTENSIONS | MS_EXTENDED_EXTENSIONS | AUDIO_EXTENSIONS
+    STANDARD_EXTENSIONS | SOFFICE_EXTENSIONS | TABLE_EXTENSIONS | MS_EXTENDED_EXTENSIONS | AUDIO_EXTENSIONS
 )
 
 
@@ -1112,7 +1112,7 @@ def extract_document(
         ingestor = get_docling_ingestor(async_slot_provider=async_slot_provider)
 
         extraction: Optional[DoclingExtraction] = None
-        if category in {"standard", "soffice"}:
+        if category in {"standard", "soffice", "table"}:
             docling_attempted = True
             try:
                 extraction = ingestor.extract(
