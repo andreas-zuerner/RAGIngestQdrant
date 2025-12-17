@@ -1151,11 +1151,8 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
         finish_error(conn, job_id, file_id, "error_extract_failed", str(exc))
         return None
     finally:
-        if temp_file and temp_file.exists():
-            try:
-                temp_file.unlink()
-            except Exception:
-                pass
+        # Do NOT delete temp_file here; it is needed in post_extraction (SQL table import).
+        pass
 
     if not clean or len(clean) < MIN_CHARS:
         update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
@@ -1279,6 +1276,9 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
 
     if is_table_file:
         src_path = Path(temp_path) if temp_path else Path(stage.original_path)
+        
+        safe_log(conn, job_id, file_id, "table_import_src",
+                 f"src={src_path} exists={src_path.exists()} size={(src_path.stat().st_size if src_path.exists() else 'NA')}")
 
         table_rows = load_table_rows_from_file(src_path)
 
@@ -1480,14 +1480,21 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     update_file_result(conn, file_id, result)
     finish_success(conn, job_id, file_id, "vectorized")
 
-
-
 def process_one(conn, job_id, file_id, stage: ExtractionStageResult | None = None):
     active_stage = stage or run_extraction_stage(conn, job_id, file_id)
     if active_stage is None:
         return
-    run_post_extraction_pipeline(conn, active_stage)
-
+    try:
+        run_post_extraction_pipeline(conn, active_stage)
+    finally:
+        # Cleanup temp download AFTER full processing
+        try:
+            if active_stage.temp_path:
+                p = Path(active_stage.temp_path)
+                if p.exists() and p.is_file() and p.name.startswith("nxc-"):
+                    p.unlink()
+        except Exception:
+            pass
 
 def _start_pipeline(pipeline_executor: ThreadPoolExecutor, stage: ExtractionStageResult):
     def _pipeline_task():
