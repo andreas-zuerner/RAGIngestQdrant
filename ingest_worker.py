@@ -155,35 +155,194 @@ def load_tables(conn: sqlite3.Connection, table_ids: List[str]) -> Dict[str, Lis
 
 
 def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[str, Any]]:
-    """Read a tabular file (currently CSV) into a list of row dictionaries."""
+    """
+    Read a tabular file into a list of row dictionaries.
+    Supports: CSV/TSV, XLSX/XLSM, ODS (via soffice -> CSV).
+    """
+    if not path or not path.exists() or not path.is_file():
+        return []
 
-    try:
-        if not path.exists() or not path.is_file():
+    ext = path.suffix.lower()
+
+    def _is_blank_row(values) -> bool:
+        if values is None:
+            return True
+        for v in values:
+            if v is None:
+                continue
+            s = str(v).strip()
+            if s != "":
+                return False
+        return True
+
+    def _to_jsonable(v):
+        if v is None:
+            return ""
+        if isinstance(v, (str, int, float, bool)):
+            return v
+        # datetime/date-like
+        if hasattr(v, "isoformat"):
+            try:
+                return v.isoformat()
+            except Exception:
+                pass
+        return str(v)
+
+    def _read_csv(csv_path: Path) -> List[Dict[str, Any]]:
+        try:
+            with csv_path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+                try:
+                    dialect = csv.Sniffer().sniff(f.read(2048))
+                    f.seek(0)
+                except Exception:
+                    f.seek(0)
+                    dialect = csv.excel
+
+                reader = csv.reader(f, dialect)
+                rows = list(reader)
+        except Exception:
             return []
 
-        with path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+        if not rows:
+            return []
+
+        headers = [h.strip() or f"col_{idx}" for idx, h in enumerate(rows[0])]
+        parsed_rows: List[Dict[str, Any]] = []
+        for row in rows[1:]:
+            if max_rows and len(parsed_rows) >= max_rows:
+                break
+            if _is_blank_row(row):
+                continue
+            parsed_rows.append({headers[i]: (row[i] if i < len(row) else "") for i in range(len(headers))})
+        return parsed_rows
+
+    def _read_xlsx(xlsx_path: Path) -> List[Dict[str, Any]]:
+        try:
+            import openpyxl  # dependency is installed in your environment
+        except Exception:
+            return []
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+        except Exception:
+            return []
+
+        out: List[Dict[str, Any]] = []
+        sheets = list(wb.worksheets)
+
+        for ws in sheets:
             try:
-                dialect = csv.Sniffer().sniff(f.read(2048))
-                f.seek(0)
+                it = ws.iter_rows(values_only=True)
             except Exception:
-                f.seek(0)
-                dialect = csv.excel
-            reader = csv.reader(f, dialect)
-            rows = list(reader)
-    except Exception:
-        return []
+                continue
 
-    if not rows:
-        return []
+            # find first non-empty row as header
+            header = None
+            for row in it:
+                if _is_blank_row(row):
+                    continue
+                header = [
+                    (str(c).strip() if c is not None and str(c).strip() != "" else f"col_{i}")
+                    for i, c in enumerate(row)
+                ]
+                break
 
-    headers = [h.strip() or f"col_{idx}" for idx, h in enumerate(rows[0])]
-    parsed_rows: List[Dict[str, Any]] = []
-    for row_idx, row in enumerate(rows[1:], start=0):
-        if max_rows and len(parsed_rows) >= max_rows:
-            break
-        parsed_rows.append({headers[i]: row[i] if i < len(row) else "" for i in range(len(headers))})
+            if not header:
+                continue
 
-    return parsed_rows
+            for row in it:
+                if max_rows and len(out) >= max_rows:
+                    return out
+                if _is_blank_row(row):
+                    continue
+
+                d = {header[i]: _to_jsonable(row[i]) if i < len(row) else "" for i in range(len(header))}
+                if len(sheets) > 1:
+                    d["__sheet__"] = ws.title
+                out.append(d)
+
+        return out
+
+    def _ods_to_csv(ods_path: Path):
+        import shutil
+        import tempfile
+        from contextlib import contextmanager
+        import subprocess
+
+        soffice = shutil.which("soffice") or shutil.which("libreoffice")
+        if not soffice:
+            return None, None
+
+        @contextmanager
+        def _exclusive_soffice():
+            # align with your existing locking convention
+            lock_path = Path(os.environ.get("SOFFICE_LOCK_FILE", "/tmp/soffice-convert.lock"))
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(lock_path, "w") as lock_file:
+                try:
+                    import fcntl
+                    fcntl.flock(lock_file, fcntl.LOCK_EX)
+                except Exception:
+                    pass
+                try:
+                    yield
+                finally:
+                    try:
+                        import fcntl
+                        fcntl.flock(lock_file, fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+
+        outdir = Path(tempfile.mkdtemp(prefix="ods2csv-"))
+        cmd = [
+            soffice,
+            "--headless",
+            "--nologo",
+            "--nolockcheck",
+            "--nodefault",
+            "--norestore",
+            "--convert-to",
+            "csv",
+            "--outdir",
+            str(outdir),
+            str(ods_path),
+        ]
+
+        try:
+            with _exclusive_soffice():
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, check=False)
+        except Exception:
+            return None, outdir
+
+        csv_files = sorted(list(outdir.glob("*.csv")) + list(outdir.glob("*.CSV")))
+        if not csv_files:
+            return None, outdir
+        return csv_files[0], outdir
+
+    # Dispatch by extension
+    if ext in {".csv", ".tsv", ".txt"}:
+        return _read_csv(path)
+
+    if ext in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return _read_xlsx(path)
+
+    if ext == ".ods":
+        csv_path, tmpdir = _ods_to_csv(path)
+        try:
+            if csv_path:
+                return _read_csv(csv_path)
+            return []
+        finally:
+            # cleanup conversion dir
+            if tmpdir:
+                try:
+                    import shutil
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                except Exception:
+                    pass
+
+    return []
+
 
 # === Config (ENV) ===
 DB_PATH = initENV.DB_PATH
