@@ -1269,16 +1269,45 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         return
 
     clean_with_tables, found_tables = extract_markdown_tables_from_text(clean)
-    if is_table_file and not found_tables:
-        table_rows = load_table_rows_from_file(Path(temp_path)) if temp_path else load_table_rows_from_file(Path(stage.original_path))
+
+    tables_to_store: List[Dict[str, Any]] = []
+    table_lookup: Dict[str, List[Dict[str, Any]]] = {}
+
+    if is_table_file:
+        # Always import from original file into SQL (preferred source of truth)
+        src_path = Path(temp_path) if temp_path else Path(stage.original_path)
+
+        table_rows = load_table_rows_from_file(src_path)
+
         if table_rows:
             table_id = str(uuid.uuid4())
-            found_tables = [{"table_id": table_id, "rows": table_rows, "label": document_name}]
+            tables_to_store = [{"table_id": table_id, "rows": table_rows, "label": document_name}]
+            table_lookup = {table_id: table_rows}
+
+            # Ensure the text points to the SQL-backed table id (single reference)
             clean_with_tables = f"{clean_with_tables}\n\n[TABLE:{table_id}]"
-    table_lookup = {t["table_id"]: t.get("rows", []) for t in found_tables}
-    if found_tables:
+
+            safe_log(
+                conn, job_id, file_id, "table_import_original_ok",
+                f"rows={len(table_rows)} src={src_path}"
+            )
+        else:
+            # Original import failed -> fall back to markdown-extracted tables, if any
+            tables_to_store = found_tables
+            table_lookup = {t["table_id"]: t.get("rows", []) for t in found_tables}
+
+            safe_log(
+                conn, job_id, file_id, "table_import_original_empty",
+                f"src={src_path} markdown_tables={len(found_tables)}"
+            )
+    else:
+        # Non-table files: keep current behavior
+        tables_to_store = found_tables
+        table_lookup = {t["table_id"]: t.get("rows", []) for t in found_tables}
+
+    if tables_to_store:
         delete_tables_for_file(conn, file_id)
-        store_tables(conn, file_id, stage.original_path, found_tables)
+        store_tables(conn, file_id, stage.original_path, tables_to_store)
         safe_log(conn, job_id, file_id, "tables_extracted", f"count={len(found_tables)}")
     else:
         table_lookup = {}
