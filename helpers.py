@@ -82,6 +82,23 @@ def ensure_db(conn: sqlite3.Connection):
             created_at TEXT DEFAULT (datetime('now')),
             FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS table_registry (
+            table_id TEXT PRIMARY KEY,
+            file_id TEXT NOT NULL,
+            source_path TEXT,
+            label TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS table_data (
+            table_id TEXT NOT NULL,
+            row_idx INTEGER NOT NULL,
+            row_json TEXT NOT NULL,
+            PRIMARY KEY (table_id, row_idx),
+            FOREIGN KEY(table_id) REFERENCES table_registry(table_id) ON DELETE CASCADE
+        );
         """
     )
     conn.commit()
@@ -106,6 +123,8 @@ def ensure_db(conn: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash);
 
         CREATE INDEX IF NOT EXISTS idx_images_file_id ON images(file_id);
+
+        CREATE INDEX IF NOT EXISTS idx_table_registry_file_id ON table_registry(file_id);
 
         CREATE INDEX IF NOT EXISTS idx_jobs_q ON jobs(status, run_not_before);
         CREATE INDEX IF NOT EXISTS idx_jobs_enqueue ON jobs(enqueue_at, job_id);

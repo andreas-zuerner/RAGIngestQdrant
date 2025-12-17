@@ -398,6 +398,27 @@ def reset_nextcloud_images() -> str:
     return f"Deleted {removed} items from {NEXTCLOUD_IMAGE_DIR}. {db_msg}"
 
 
+def clear_table_records(file_id: Optional[str] = None) -> str:
+    if not DB_PATH.exists():
+        return "No database found for tables."
+    conn = init_conn(DB_PATH)
+    try:
+        if file_id:
+            conn.execute(
+                "DELETE FROM table_data WHERE table_id IN (SELECT table_id FROM table_registry WHERE file_id=?)",
+                (file_id,),
+            )
+            conn.execute("DELETE FROM table_registry WHERE file_id=?", (file_id,))
+            conn.commit()
+            return f"Removed table records for {file_id}."
+        conn.execute("DELETE FROM table_data")
+        conn.execute("DELETE FROM table_registry")
+        conn.commit()
+        return "Removed all table records."
+    finally:
+        conn.close()
+
+
 def delete_state_entry(file_id: str) -> str:
     if not DB_PATH.exists():
         return "Database not found."
@@ -496,6 +517,7 @@ def delete_file():
     messages.append(delete_state_entry(file_id))
     messages.append(delete_nextcloud_images(file_id, image_refs))
     messages.append(clear_image_records(file_id))
+    messages.append(clear_table_records(file_id))
     for msg in messages:
         log_debug(f"[delete_file] file_id={file_id} msg={msg}")
         append_log(f"[delete_file] {file_id}: {msg}")

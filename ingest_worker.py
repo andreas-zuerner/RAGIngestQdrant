@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 import sqlite3
 import subprocess
 import sys
@@ -11,11 +12,12 @@ import tempfile
 import threading
 import time
 import traceback
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, Future
 from urllib.parse import unquote
 
@@ -54,6 +56,102 @@ def safe_log(conn, job_id, file_id, step, detail):
     except Exception:
         pass
 
+
+# --- Table handling helpers ---
+
+_TABLE_REF_PATTERN = re.compile(r"\[TABLE:([^\]]+)\]")
+
+
+def _is_table_separator(line: str) -> bool:
+    parts = [p.strip() for p in line.strip().split("|") if p.strip()]
+    return bool(parts) and all(set(p) <= {"-", ":"} for p in parts)
+
+
+def _split_markdown_row(line: str, expected: int) -> List[str]:
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    while len(cells) < expected:
+        cells.append("")
+    return cells[:expected]
+
+
+def extract_markdown_tables_from_text(text: str) -> Tuple[str, List[Dict[str, Any]]]:
+    lines = (text or "").splitlines()
+    out_lines: List[str] = []
+    tables: List[Dict[str, Any]] = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
+        if "|" in line and _is_table_separator(next_line):
+            headers = [h.strip() or f"col_{i}" for i, h in enumerate(line.strip().strip("|").split("|"))]
+            data_lines: List[str] = []
+            idx += 2
+            while idx < len(lines) and "|" in lines[idx] and lines[idx].strip():
+                data_lines.append(lines[idx])
+                idx += 1
+            if data_lines:
+                table_id = str(uuid.uuid4())
+                rows: List[Dict[str, Any]] = []
+                for row_idx, row_line in enumerate(data_lines):
+                    cells = _split_markdown_row(row_line, len(headers))
+                    row = {headers[i]: cells[i] for i in range(len(headers))}
+                    rows.append(row)
+                tables.append({"table_id": table_id, "rows": rows})
+                out_lines.append(f"[TABLE:{table_id}]")
+                continue
+        out_lines.append(line)
+        idx += 1
+    return "\n".join(out_lines), tables
+
+
+def delete_tables_for_file(conn: sqlite3.Connection, file_id: str):
+    conn.execute(
+        "DELETE FROM table_data WHERE table_id IN (SELECT table_id FROM table_registry WHERE file_id=?)",
+        (file_id,),
+    )
+    conn.execute("DELETE FROM table_registry WHERE file_id=?", (file_id,))
+    conn.commit()
+
+
+def store_tables(conn: sqlite3.Connection, file_id: str, source_path: str, tables: List[Dict[str, Any]]):
+    for table in tables:
+        table_id = table.get("table_id") or str(uuid.uuid4())
+        conn.execute(
+            "INSERT OR REPLACE INTO table_registry(table_id, file_id, source_path, label) VALUES(?,?,?,?)",
+            (table_id, file_id, source_path, table.get("label")),
+        )
+        rows = table.get("rows") or []
+        for idx, row in enumerate(rows):
+            conn.execute(
+                "INSERT OR REPLACE INTO table_data(table_id, row_idx, row_json) VALUES(?,?,?)",
+                (table_id, idx, json.dumps(row or {}, ensure_ascii=False)),
+            )
+    conn.commit()
+
+
+def load_tables(conn: sqlite3.Connection, table_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    if not table_ids:
+        return {}
+    placeholders = ",".join("?" for _ in table_ids)
+    rows = conn.execute(
+        f"SELECT table_id, row_idx, row_json FROM table_data WHERE table_id IN ({placeholders}) ORDER BY row_idx",
+        table_ids,
+    ).fetchall()
+    tables: Dict[str, List[Dict[str, Any]]] = {tid: [] for tid in table_ids}
+    for row in rows:
+        try:
+            tid = row["table_id"]
+            row_json = row["row_json"]
+        except Exception:
+            tid = row[0]
+            row_json = row[2]
+        try:
+            parsed = json.loads(row_json)
+        except Exception:
+            parsed = {"raw": row_json}
+        tables.setdefault(tid, []).append(parsed)
+    return tables
+
 # === Config (ENV) ===
 DB_PATH = initENV.DB_PATH
 BRAIN_URL = initENV.BRAIN_URL
@@ -80,6 +178,8 @@ PDFTOTEXT_TIMEOUT_S = initENV.PDFTOTEXT_TIMEOUT_S
 PDF_OCR_MAX_PAGES = initENV.PDF_OCR_MAX_PAGES
 PDF_OCR_DPI = initENV.PDF_OCR_DPI
 RETRY_PRIORITY_ERROR = 90
+
+TABLE_EXTENSIONS = set(initENV.FILE_TYPES_TABLE)
 
 DOCLING_SERVE_URL = initENV.DOCLING_SERVE_URL
 DOCLING_SERVE_TIMEOUT = initENV.DOCLING_SERVE_TIMEOUT
@@ -905,6 +1005,8 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     clean = stage.clean_text
     doc_dbg_dir = stage.doc_dbg_dir
     original_name = Path(stage.original_path).name
+    ext = Path(stage.original_path).suffix.lower()
+    is_table_file = ext in TABLE_EXTENSIONS
     try:
         original_name = unquote(original_name)
     except Exception:
@@ -954,30 +1056,44 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         finish_error(conn, job_id, file_id, "error_image_upload", f"image_upload_failed: {exc}")
         return
 
-    log(f"[chunking_start] job_id={job_id} file_id={file_id} len={len(clean)} max_chunks={MAX_CHUNKS} overlap={OVERLAP}")
-    log_decision(conn, job_id, file_id, "stage_chunking", "chunking text")
-    safe_log(conn, job_id, file_id, "chunking_request", f"model={OLLAMA_MODEL_CHUNKING} tokens={BRAIN_CHUNK_TOKENS} overlap_chars={OVERLAP} max_chunks={MAX_CHUNKS} chars={len(clean)}")
-    chunk_texts, chunk_meta = chunk_document_with_llm_fallback(
-        clean,
-        ollama_host=OLLAMA_HOST,
-        model=OLLAMA_MODEL_CHUNKING,
-        target_tokens=BRAIN_CHUNK_TOKENS,
-        overlap_chars=OVERLAP,
-        max_chunks=MAX_CHUNKS,
-        timeout=BRAIN_REQUEST_TIMEOUT,
-        debug=DEBUG,
-        return_debug=True,
-    )
+    clean_with_tables, found_tables = extract_markdown_tables_from_text(clean)
+    table_lookup = {t["table_id"]: t.get("rows", []) for t in found_tables}
+    if found_tables:
+        delete_tables_for_file(conn, file_id)
+        store_tables(conn, file_id, stage.original_path, found_tables)
+        safe_log(conn, job_id, file_id, "tables_extracted", f"count={len(found_tables)}")
+    else:
+        table_lookup = {}
 
-    chunk_source = "llm_chunking"
-    if chunk_meta.get("chunk_source") == "fallback":
-        chunk_source = "llm_fallback"
-    if chunk_meta:
-        safe_log(conn, job_id, file_id, "chunking_meta", json.dumps(chunk_meta, ensure_ascii=False)[:500])
-        log_debug(f"[chunking_meta] job_id={job_id} file_id={file_id} llm={chunk_meta.get('llm_info')} fallback={chunk_meta.get('fallback_used')}")
+    chunk_source = "table_summary" if is_table_file else "llm_chunking"
+    if is_table_file:
+        log(f"[table_summary] job_id={job_id} file_id={file_id} len={len(clean_with_tables)}")
+        log_decision(conn, job_id, file_id, "stage_table_summary", "summarizing table document")
+        chunk_texts = [clean_with_tables]
+    else:
+        log(f"[chunking_start] job_id={job_id} file_id={file_id} len={len(clean_with_tables)} max_chunks={MAX_CHUNKS} overlap={OVERLAP}")
+        log_decision(conn, job_id, file_id, "stage_chunking", "chunking text")
+        safe_log(conn, job_id, file_id, "chunking_request", f"model={OLLAMA_MODEL_CHUNKING} tokens={BRAIN_CHUNK_TOKENS} overlap_chars={OVERLAP} max_chunks={MAX_CHUNKS} chars={len(clean_with_tables)}")
+        chunk_texts, chunk_meta = chunk_document_with_llm_fallback(
+            clean_with_tables,
+            ollama_host=OLLAMA_HOST,
+            model=OLLAMA_MODEL_CHUNKING,
+            target_tokens=BRAIN_CHUNK_TOKENS,
+            overlap_chars=OVERLAP,
+            max_chunks=MAX_CHUNKS,
+            timeout=BRAIN_REQUEST_TIMEOUT,
+            debug=DEBUG,
+            return_debug=True,
+        )
 
-    if not chunk_texts and extraction.chunks:
-        chunk_texts = [c.text for c in extraction.chunks]
+        if chunk_meta.get("chunk_source") == "fallback":
+            chunk_source = "llm_fallback"
+        if chunk_meta:
+            safe_log(conn, job_id, file_id, "chunking_meta", json.dumps(chunk_meta, ensure_ascii=False)[:500])
+            log_debug(f"[chunking_meta] job_id={job_id} file_id={file_id} llm={chunk_meta.get('llm_info')} fallback={chunk_meta.get('fallback_used')}")
+
+        if not chunk_texts and extraction.chunks:
+            chunk_texts = [c.text for c in extraction.chunks]
         chunk_source = "docling_fallback"
         safe_log(conn, job_id, file_id, "chunking_fallback", "used docling chunks due to empty LLM output")
 
@@ -1010,12 +1126,13 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     log(f"[add_context_start] job_id={job_id} file_id={file_id} chunks={len(chunk_texts)}")
     log_decision(conn, job_id, file_id, "stage_context", "adding context")
     chunks = enrich_chunks_with_context(
-        document=clean,
+        document=clean_with_tables,
         chunks=chunk_texts,
         ollama_host=OLLAMA_HOST,
         model=OLLAMA_MODEL_CONTEXT,
         timeout=BRAIN_REQUEST_TIMEOUT,
         debug=DEBUG,
+        table_lookup=table_lookup,
     )
 
     errors = []
@@ -1100,6 +1217,10 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         },
         "images": sanitized_images,
     }
+    if found_tables:
+        result["tables"] = [
+            {"table_id": t.get("table_id"), "rows": len(t.get("rows", []))} for t in found_tables
+        ]
     if errors:
         result["errors"] = errors
         update_file_result(conn, file_id, result)
