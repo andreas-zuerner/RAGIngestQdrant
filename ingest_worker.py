@@ -1,5 +1,6 @@
 
 #!/usr/bin/env python3
+import csv
 import json
 import logging
 import os
@@ -151,6 +152,38 @@ def load_tables(conn: sqlite3.Connection, table_ids: List[str]) -> Dict[str, Lis
             parsed = {"raw": row_json}
         tables.setdefault(tid, []).append(parsed)
     return tables
+
+
+def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[str, Any]]:
+    """Read a tabular file (currently CSV) into a list of row dictionaries."""
+
+    try:
+        if not path.exists() or not path.is_file():
+            return []
+
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+            try:
+                dialect = csv.Sniffer().sniff(f.read(2048))
+                f.seek(0)
+            except Exception:
+                f.seek(0)
+                dialect = csv.excel
+            reader = csv.reader(f, dialect)
+            rows = list(reader)
+    except Exception:
+        return []
+
+    if not rows:
+        return []
+
+    headers = [h.strip() or f"col_{idx}" for idx, h in enumerate(rows[0])]
+    parsed_rows: List[Dict[str, Any]] = []
+    for row_idx, row in enumerate(rows[1:], start=0):
+        if max_rows and len(parsed_rows) >= max_rows:
+            break
+        parsed_rows.append({headers[i]: row[i] if i < len(row) else "" for i in range(len(headers))})
+
+    return parsed_rows
 
 # === Config (ENV) ===
 DB_PATH = initENV.DB_PATH
@@ -1007,6 +1040,7 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     original_name = Path(stage.original_path).name
     ext = Path(stage.original_path).suffix.lower()
     is_table_file = ext in TABLE_EXTENSIONS
+    ai: Dict[str, Any] = {}
     try:
         original_name = unquote(original_name)
     except Exception:
@@ -1015,38 +1049,57 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     temp_path = stage.temp_path or stage.original_path
     temp_name = stage.temp_name or extraction.slug or Path(temp_path).name
 
-    try:
-        if not OLLAMA_HOST:
-            safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
-            raise RuntimeError("OLLAMA disabled")
+    if is_table_file:
+        ai = {"is_relevant": True, "confidence": 1.0, "reason": "table_file_auto_accept"}
+        log_decision(conn, job_id, file_id, "stage_relevance_skip", "table file -> skip relevance check")
+        safe_log(conn, job_id, file_id, "relevance_skip", "table file auto-accepted")
+    else:
+        try:
+            if not OLLAMA_HOST:
+                safe_log(conn, job_id, file_id, "no_ollama", "OLLAMA_HOST not set -> skipping AI score")
+                raise RuntimeError("OLLAMA disabled")
 
-        log_decision(conn, job_id, file_id, "stage_relevance", "running relevance check")
-        log(f"[ai_score_start] job_id={job_id} file_id={file_id} len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
-        safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
-        ai = ai_score_text(
-            OLLAMA_HOST,
-            OLLAMA_MODEL_RELEVANCE,
-            clean,
-            timeout=600,
-            debug=DEBUG,
-            dbg_root=Path("./debug"),
-            dbg_dir=doc_dbg_dir,
-        )
-        is_rel = bool(ai.get("is_relevant"))
-        conf = float(ai.get("confidence", 0.0))
-        log(f"[ai_score_result] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf}")
-        safe_log(conn, job_id, file_id, "score", f"is_rel={is_rel} conf={conf}")
-    except Exception as e:
-        update_file_result(conn, file_id, {"accepted": False, "error": f"ai_scoring_failed: {e}"})
-        finish_error(conn, job_id, file_id, "error_ai_scoring", f"ai_scoring_failed: {e}")
-        return
+            log_decision(conn, job_id, file_id, "stage_relevance", "running relevance check")
+            log(
+                f"[ai_score_start] job_id={job_id} file_id={file_id} len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}"
+            )
+            safe_log(conn, job_id, file_id, "pre_ai", f"len={len(clean)} host={OLLAMA_HOST} model={OLLAMA_MODEL_RELEVANCE}")
+            ai = ai_score_text(
+                OLLAMA_HOST,
+                OLLAMA_MODEL_RELEVANCE,
+                clean,
+                timeout=600,
+                debug=DEBUG,
+                dbg_root=Path("./debug"),
+                dbg_dir=doc_dbg_dir,
+            )
+            is_rel = bool(ai.get("is_relevant"))
+            conf = float(ai.get("confidence", 0.0))
+            log(f"[ai_score_result] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf}")
+            safe_log(conn, job_id, file_id, "score", f"is_rel={is_rel} conf={conf}")
+        except Exception as e:
+            update_file_result(conn, file_id, {"accepted": False, "error": f"ai_scoring_failed: {e}"})
+            finish_error(conn, job_id, file_id, "error_ai_scoring", f"ai_scoring_failed: {e}")
+            return
 
-    if not is_rel or conf < RELEVANCE_THRESHOLD:
-        log(f"[ai_threshold_skip] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf} threshold={RELEVANCE_THRESHOLD}")
-        update_file_result(conn, file_id, {"accepted": False, "ai": ai, "reason": "below_threshold", "threshold": RELEVANCE_THRESHOLD})
-        log_decision(conn, job_id, file_id, "threshold", f"skip: is_relevant={is_rel} conf={conf} < RELEVANCE_THRESHOLD={RELEVANCE_THRESHOLD}")
-        finish_success(conn, job_id, file_id, "ai_not_relevant")
-        return
+        if not is_rel or conf < RELEVANCE_THRESHOLD:
+            log(
+                f"[ai_threshold_skip] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf} threshold={RELEVANCE_THRESHOLD}"
+            )
+            update_file_result(
+                conn,
+                file_id,
+                {"accepted": False, "ai": ai, "reason": "below_threshold", "threshold": RELEVANCE_THRESHOLD},
+            )
+            log_decision(
+                conn,
+                job_id,
+                file_id,
+                "threshold",
+                f"skip: is_relevant={is_rel} conf={conf} < RELEVANCE_THRESHOLD={RELEVANCE_THRESHOLD}",
+            )
+            finish_success(conn, job_id, file_id, "ai_not_relevant")
+            return
 
     try:
         extraction_outcome.upload_images()
@@ -1057,6 +1110,12 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         return
 
     clean_with_tables, found_tables = extract_markdown_tables_from_text(clean)
+    if is_table_file and not found_tables:
+        table_rows = load_table_rows_from_file(Path(temp_path)) if temp_path else load_table_rows_from_file(Path(stage.original_path))
+        if table_rows:
+            table_id = str(uuid.uuid4())
+            found_tables = [{"table_id": table_id, "rows": table_rows, "label": document_name}]
+            clean_with_tables = f"{clean_with_tables}\n\n[TABLE:{table_id}]"
     table_lookup = {t["table_id"]: t.get("rows", []) for t in found_tables}
     if found_tables:
         delete_tables_for_file(conn, file_id)
