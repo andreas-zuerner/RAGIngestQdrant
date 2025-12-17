@@ -1153,8 +1153,8 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
 
         if not chunk_texts and extraction.chunks:
             chunk_texts = [c.text for c in extraction.chunks]
-        chunk_source = "docling_fallback"
-        safe_log(conn, job_id, file_id, "chunking_fallback", "used docling chunks due to empty LLM output")
+            chunk_source = "docling_fallback"
+            safe_log(conn, job_id, file_id, "chunking_fallback", "used docling chunks due to empty LLM output")
 
     # === DEBUG: write ONE file with ALL chunks (NO context), untruncated ===
     if DEBUG and doc_dbg_dir:
