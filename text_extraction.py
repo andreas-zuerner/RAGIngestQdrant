@@ -52,6 +52,7 @@ MS_EXTENDED_EXTENSIONS = set(
     initENV.FILE_TYPES_MS_EXTENDED if initENV.ENABLE_MS_EXTENDED_TYPES else set()
 )
 AUDIO_EXTENSIONS = set(initENV.FILE_TYPES_AUDIO if initENV.ENABLE_AUDIO_TYPES else set())
+TABLE_EXTENSIONS = set(initENV.FILE_TYPES_TABLE)
 
 CONVERT_BEFORE_DOCLING = set(SOFFICE_EXTENSIONS)
 DOCILING_EXTENSIONS = set(STANDARD_EXTENSIONS | CONVERT_BEFORE_DOCLING)
@@ -62,6 +63,8 @@ SUPPORTED_EXTENSIONS = set(
 
 def extension_category(ext: str) -> str:
     ext = (ext or "").lower()
+    if ext in TABLE_EXTENSIONS:
+        return "table"
     if ext in STANDARD_EXTENSIONS:
         return "standard"
     if ext in SOFFICE_EXTENSIONS:

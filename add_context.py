@@ -1,3 +1,4 @@
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -42,6 +43,19 @@ def _extract_image_refs(text: str) -> List[str]:
         if name and name not in images:
             images.append(name)
     return images
+
+
+def _extract_table_refs(text: str) -> List[str]:
+    """Parse chunk text for table references like `[TABLE:uuid]`."""
+    if not text or not isinstance(text, str):
+        return []
+    regex = re.compile(r"\[TABLE:([^\]]+)\]")
+    refs: List[str] = []
+    for match in regex.finditer(text):
+        tid = match.group(1).strip()
+        if tid and tid not in refs:
+            refs.append(tid)
+    return refs
 
 
 EXTRACTED_IMAGES_SECTION = re.compile(
@@ -122,6 +136,7 @@ def add_context_to_chunks(
     model: str,
     timeout: float = 120.0,
     debug: Optional[Any] = None,
+    table_lookup: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> List[Dict[str, Any]]:
     """Annotate chunks with LLM-generated context paragraphs and rich metadata."""
     chunks = [ChunkItem(chunk_id=i.get("chunk_id", idx + 1), start=i.get("start"), end=i.get("end"), content=i.get("content") or i.get("text") or "", fullText=i.get("fullText"), fileName=i.get("fileName") or i.get("filename"), filePath=i.get("filePath") or i.get("filepath"), debug=i.get("debug", debug)) for idx, i in enumerate(items)]
@@ -146,6 +161,19 @@ def add_context_to_chunks(
     for idx, chunk in enumerate(sorted_chunks):
         chunk_text = _strip_extracted_images_section(chunk.content or "")
         image_refs = _extract_image_refs(chunk_text)
+        table_refs = _extract_table_refs(chunk_text)
+
+        chunk_tables = {}
+        chunk_text_with_tables = chunk_text
+        if table_refs and table_lookup:
+            for table_id in table_refs:
+                rows = table_lookup.get(table_id)
+                if rows:
+                    chunk_tables[table_id] = rows
+                    serialized = json.dumps(rows, ensure_ascii=False, indent=2)
+                    chunk_text_with_tables += f"\n\n[TABLE_DATA {table_id}]\n{serialized}"
+        else:
+            chunk_text_with_tables = chunk_text
 
         if not chunk_text.strip():
             results.append(
@@ -166,8 +194,21 @@ def add_context_to_chunks(
             )
             continue
 
+        if table_refs and table_lookup:
+            table_summaries = []
+            for table_id in table_refs:
+                rows = table_lookup.get(table_id)
+                if rows:
+                    table_summaries.append(f"[TABLE_DATA {table_id}]\n{json.dumps(rows, ensure_ascii=False)}")
+            if table_summaries:
+                full_doc_with_tables = f"{full_doc}\n\n" + "\n\n".join(table_summaries)
+            else:
+                full_doc_with_tables = full_doc
+        else:
+            full_doc_with_tables = full_doc
+
         try:
-            context = _call_llm(full_doc, chunk_text, ollama_host=ollama_host, model=model, timeout=timeout)
+            context = _call_llm(full_doc_with_tables, chunk_text_with_tables, ollama_host=ollama_host, model=model, timeout=timeout)
         except Exception as exc:  # noqa: BLE001
             results.append(
                 {
@@ -181,13 +222,14 @@ def add_context_to_chunks(
                         "start": chunk.start,
                         "end": chunk.end,
                         "images": image_refs,
+                        "tables": table_refs,
                         "context_error": str(exc),
                     },
                 }
             )
             continue
 
-        combined_text = f"{context}\n\n{chunk_text}" if context else chunk_text
+        combined_text = f"{context}\n\n{chunk_text_with_tables}" if context else chunk_text_with_tables
         results.append(
             {
                 "text": combined_text,
@@ -200,6 +242,7 @@ def add_context_to_chunks(
                     "start": chunk.start,
                     "end": chunk.end,
                     "images": image_refs,
+                    "tables": table_refs,
                     "original_debug": chunk.debug,
                 },
             }
@@ -216,6 +259,7 @@ def enrich_chunks_with_context(
     model: str,
     timeout: float = 120.0,
     debug: Optional[Any] = None,
+    table_lookup: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> List[ContextChunk]:
     """Convenience wrapper to enrich plain chunk strings with generated context."""
     items = [
@@ -230,7 +274,14 @@ def enrich_chunks_with_context(
         for idx, chunk in enumerate(chunks)
     ]
 
-    enriched_items = add_context_to_chunks(items, ollama_host=ollama_host, model=model, timeout=timeout, debug=debug)
+    enriched_items = add_context_to_chunks(
+        items,
+        ollama_host=ollama_host,
+        model=model,
+        timeout=timeout,
+        debug=debug,
+        table_lookup=table_lookup,
+    )
     context_chunks: List[ContextChunk] = []
     for item in enriched_items:
         meta = item.get("meta") or {}

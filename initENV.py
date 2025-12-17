@@ -167,6 +167,13 @@ FILE_TYPES_AUDIO = _normalize_extensions(
     )
 )
 
+FILE_TYPES_TABLE = _normalize_extensions(
+    env_list(
+        "FILE_TYPES_TABLE",
+        default=[".csv", ".ods", ".xls", ".xlsx"],
+    )
+)
+
 ENABLE_SOFFICE_TYPES = env_bool("ENABLE_SOFFICE_TYPES", True)
 ENABLE_MS_EXTENDED_TYPES = env_bool("ENABLE_MS_EXTENDED_TYPES", False)
 ENABLE_AUDIO_TYPES = env_bool("ENABLE_AUDIO_TYPES", False)
