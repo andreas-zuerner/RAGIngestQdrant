@@ -1370,9 +1370,12 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     if is_table_file:
         log(f"[table_summary] job_id={job_id} file_id={file_id} len={len(clean_with_tables)}")
         log_decision(conn, job_id, file_id, "stage_table_summary", "summarizing table document")
-        chunk_texts = [clean_with_tables]
+
+        table_chunk = clean_with_tables  # <-- FIX: Variable definieren
+
         if len(table_chunk) > 6000:
-            table_chunk = table_chunk[:6000] + "\n\n[...truncated for table summary chunk...]"
+            table_chunk = table_chunk[:6000] + "\n\n[.truncated for table summary chunk.]"
+
         chunk_texts = [table_chunk]
     else:
         log(f"[chunking_start] job_id={job_id} file_id={file_id} len={len(clean_with_tables)} max_chunks={MAX_CHUNKS} overlap={OVERLAP}")
