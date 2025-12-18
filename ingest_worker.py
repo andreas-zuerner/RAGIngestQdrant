@@ -344,6 +344,23 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
 
     return []
 
+def _sample_table_rows(rows: list[dict], max_rows: int = 30) -> list[dict]:
+    if not rows:
+        return []
+    # keep first N non-empty rows; you can improve with smarter sampling later
+    out = []
+    for r in rows:
+        if r and any(str(v).strip() for v in r.values() if v is not None):
+            out.append(r)
+        if len(out) >= max_rows:
+            break
+    return out
+
+def _safe_truncate(s: str, max_chars: int) -> str:
+    if not s:
+        return ""
+    return s if len(s) <= max_chars else s[:max_chars]
+
 
 # === Config (ENV) ===
 DB_PATH = initENV.DB_PATH
@@ -1327,20 +1344,36 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     else:
         # non-table: wie bisher
         tables_to_store = found_tables
-        table_lookup = {t["table_id"]: t.get("rows", []) for t in found_tables}
+        # Persist FULL table data to SQL (step 3), but only pass a SMALL sampled excerpt
+        # into add_context (step 4) to keep the downstream payload size manageable.
+        full_table_lookup = {t["table_id"]: t.get("rows", []) for t in found_tables}
+        if found_tables:
+            delete_tables_for_file(conn, file_id)
+            store_tables(conn, file_id, stage.original_path, found_tables)
+            safe_log(conn, job_id, file_id, "tables_extracted", f"count={len(found_tables)}")
 
-    if tables_to_store:
-        delete_tables_for_file(conn, file_id)
-        store_tables(conn, file_id, stage.original_path, tables_to_store)
-        safe_log(conn, job_id, file_id, "tables_extracted", f"count={len(found_tables)}")
-    else:
-        table_lookup = {}
+            # Keep only the first rows of each table for context generation.
+            # (The full table remains in SQL and can be queried later.)
+            table_lookup = {}
+            for table_id, rows in full_table_lookup.items():
+                if not rows:
+                    continue
+                try:
+                    table_lookup[table_id] = rows[:25]   # << nur “erste Zeilen”
+                except Exception:
+                    continue
+        else:
+            table_lookup = {}
+
 
     chunk_source = "table_summary" if is_table_file else "llm_chunking"
     if is_table_file:
         log(f"[table_summary] job_id={job_id} file_id={file_id} len={len(clean_with_tables)}")
         log_decision(conn, job_id, file_id, "stage_table_summary", "summarizing table document")
         chunk_texts = [clean_with_tables]
+        if len(table_chunk) > 6000:
+            table_chunk = table_chunk[:6000] + "\n\n[...truncated for table summary chunk...]"
+        chunk_texts = [table_chunk]
     else:
         log(f"[chunking_start] job_id={job_id} file_id={file_id} len={len(clean_with_tables)} max_chunks={MAX_CHUNKS} overlap={OVERLAP}")
         log_decision(conn, job_id, file_id, "stage_chunking", "chunking text")
