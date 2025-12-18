@@ -1328,7 +1328,7 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
                 "rows": table_rows,
                 "label": document_name,   # wichtig: sonst NULL in table_registry.label
             }]
-            table_lookup = {table_id: table_rows}
+            table_lookup = {table_id: table_rows[:25]}
 
             clean_with_tables = f"{clean_with_tables}\n\n[TABLE:{table_id}]"
 
