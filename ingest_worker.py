@@ -38,6 +38,7 @@ from text_extraction import (
     ensure_dir,
     extension_category,
     extract_document,
+    convert_for_docling,
     slugify,
 )
 
@@ -1130,10 +1131,23 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
             finish_error(conn, job_id, file_id, "error_missing_file", f"{exc}")
             return None
 
+    docling_input = p
+    conv_tmpdir: Optional[Path] = None
+
     try:
+        # Convert certain formats (e.g., ODS) BEFORE sending to docling
+        try:
+            docling_input, conv_tmpdir = convert_for_docling(p)
+            if docling_input != p:
+                log(f"[convert_for_docling] job_id={job_id} file_id={file_id} in={p} out={docling_input}")
+                log_decision(conn, job_id, file_id, "docling_preconvert", f"in={p.name} out={docling_input.name}")
+        except Exception as exc:
+            # Conversion is best-effort; fall back to original path
+            log(f"[convert_for_docling_error] job_id={job_id} file_id={file_id} path={p} err={exc}")
+
         log_decision(conn, job_id, file_id, "docling_extracting", "sending to docling-serve")
         extraction_outcome = extract_document(
-            p,
+            docling_input,  # <-- IMPORTANT: use converted file if available
             job_id=job_id,
             file_id=file_id,
             original_path=original_path,
@@ -1145,14 +1159,21 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
         clean = (extraction.text or "").strip()
         detected = extraction.mime_type or "docling-serve"
         log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; source={docling_source}")
-        log_decision(conn, job_id, file_id, "extract_ok", f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}")
-    except ExtractionFailed as exc:
+        log_decision(conn, job_id, file_id, "extract_ok",
+                     f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}")
+     except ExtractionFailed as exc:
         update_file_result(conn, file_id, {"accepted": False, "skipped": "extract_failed", "error": str(exc)})
         finish_error(conn, job_id, file_id, "error_extract_failed", str(exc))
         return None
     finally:
-        # Do NOT delete temp_file here; it is needed in post_extraction (SQL table import).
-        pass
+        # Keep temp_file (Nextcloud download) for post_extraction (SQL table import).
+        # But cleanup any conversion tempdir created for docling input.
+        if conv_tmpdir:
+            try:
+                import shutil
+                shutil.rmtree(conv_tmpdir, ignore_errors=True)
+            except Exception:
+                pass
 
     if not clean or len(clean) < MIN_CHARS:
         update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
