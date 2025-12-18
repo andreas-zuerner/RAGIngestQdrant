@@ -1161,7 +1161,7 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
         log_decision(conn, job_id, file_id, "sniff", f"mime={detected}; source={docling_source}")
         log_decision(conn, job_id, file_id, "extract_ok",
                      f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}")
-     except ExtractionFailed as exc:
+    except ExtractionFailed as exc:
         update_file_result(conn, file_id, {"accepted": False, "skipped": "extract_failed", "error": str(exc)})
         finish_error(conn, job_id, file_id, "error_extract_failed", str(exc))
         return None
