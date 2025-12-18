@@ -163,17 +163,21 @@ def add_context_to_chunks(
         image_refs = _extract_image_refs(chunk_text)
         table_refs = _extract_table_refs(chunk_text)
 
+        # IMPORTANT: Do not inline raw table rows into the chunk that will later be sent to the
+        # vector store (brain). This can easily explode the payload size. Instead, we only
+        # enrich the *FULL DOCUMENT* with a (small) sampled table excerpt, so the LLM can
+        # generate a compact context paragraph.
         chunk_tables = {}
         chunk_text_with_tables = chunk_text
         if table_refs and table_lookup:
+            table_summaries = []
             for table_id in table_refs:
                 rows = table_lookup.get(table_id)
                 if rows:
-                    chunk_tables[table_id] = rows
-                    serialized = json.dumps(rows, ensure_ascii=False, indent=2)
-                    chunk_text_with_tables += f"\n\n[TABLE_DATA {table_id}]\n{serialized}"
+                    table_summaries.append(f"[TABLE_DATA {table_id}]\n{json.dumps(rows, ensure_ascii=False)}")
+            full_doc_with_tables = f"{full_doc}\n\n" + "\n\n".join(table_summaries) if table_summaries else full_doc
         else:
-            chunk_text_with_tables = chunk_text
+            full_doc_with_tables = full_doc
 
         if not chunk_text.strip():
             results.append(
