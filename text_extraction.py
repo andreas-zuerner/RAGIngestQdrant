@@ -119,9 +119,65 @@ def _exclusive_soffice():
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
+def convert_ods_to_xlsx(file_path: Path) -> tuple[Path | None, Path | None]:
+    """Convert an ODS spreadsheet to XLSX using soffice."""
+
+    soffice_candidates = [shutil.which("soffice"), shutil.which("libreoffice")]
+    soffice = next((c for c in soffice_candidates if c), None)
+    if soffice is None:
+        log(
+            f"[convert_ods_skip_no_soffice] path={file_path} "
+            f"PATH={os.environ.get('PATH')} candidates={soffice_candidates}"
+        )
+        return None, None
+
+    temp_dir: Path | None = None
+    try:
+        temp_dir = Path(tempfile.mkdtemp(prefix="ods2xlsx-"))
+        cmd = [
+            soffice,
+            "--headless",
+            "--nologo",
+            "--nolockcheck",
+            "--nodefault",
+            "--norestore",
+            "--convert-to",
+            "xlsx",
+            "--outdir",
+            str(temp_dir),
+            str(file_path),
+        ]
+        with _exclusive_soffice():
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0:
+            log(
+                f"[convert_ods_failed] source={file_path} rc={proc.returncode} "
+                f"stdout={proc.stdout.strip()!r} stderr={proc.stderr.strip()!r}"
+            )
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None, None
+
+        candidate = temp_dir / f"{file_path.stem}.xlsx"
+        if not candidate.exists():
+            xlsx_files = list(temp_dir.glob("*.xlsx")) + list(temp_dir.glob("*.XLSX"))
+            candidate = xlsx_files[0] if xlsx_files else candidate
+
+        if candidate.exists():
+            return candidate, temp_dir
+
+        log(f"[convert_ods_missing_output] source={file_path} dir={temp_dir}")
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return None, None
+    except Exception as exc:
+        log(f"[convert_ods_error] source={file_path} err={exc}")
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        return None, None
+
+
 def convert_for_docling(file_path: Path) -> Tuple[Path, Optional[Path]]:
     """
-    Convert office-style documents to PDF before sending them to docling-serve.
+    Convert office-style documents to formats docling can handle before processing.
 
     Returns a tuple of (path_to_use, temp_dir_to_cleanup). When conversion fails
     or is not required, the original path is returned and the cleanup path is None.
@@ -141,6 +197,16 @@ def convert_for_docling(file_path: Path) -> Tuple[Path, Optional[Path]]:
         return file_path, None
 
     temp_dir: Optional[Path] = None
+
+    # Convert ODS spreadsheets to XLSX instead of PDF to keep them consumable by
+    # downstream table handlers.
+    if ext == ".ods":
+        converted, temp_dir = convert_ods_to_xlsx(file_path)
+        if converted is None:
+            return file_path, None
+        log(f"[convert_success] source={file_path} target={converted}")
+        return converted, temp_dir
+
     try:
         temp_dir = Path(tempfile.mkdtemp(prefix="docling-convert-"))
         cmd = [
@@ -1231,4 +1297,3 @@ NEXTCLOUD_TOKEN = initENV.NEXTCLOUD_TOKEN
 DECISION_LOG_ENABLED = initENV.DECISION_LOG_ENABLED
 DECISION_LOG_MAX_PER_JOB = initENV.DECISION_LOG_MAX_PER_JOB
 WORKER_ID = f"{os.uname().nodename}-pid{os.getpid()}"
-
