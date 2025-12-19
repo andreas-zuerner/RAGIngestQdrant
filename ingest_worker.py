@@ -1328,6 +1328,13 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
                 "rows": table_rows,
                 "label": document_name,   # wichtig: sonst NULL in table_registry.label
             }]
+
+            # Persist FULL data to SQL
+            delete_tables_for_file(conn, file_id)
+            store_tables(conn, file_id, stage.original_path, tables_to_store)
+            safe_log(conn, job_id, file_id, "tables_imported", f"count={len(tables_to_store)} rows={len(table_rows)}")
+
+            # Only sample for add_context (keep payload small)
             table_lookup = {table_id: table_rows[:25]}
 
             clean_with_tables = f"{clean_with_tables}\n\n[TABLE:{table_id}]"
