@@ -39,6 +39,7 @@ from text_extraction import (
     extension_category,
     extract_document,
     convert_for_docling,
+    convert_ods_to_xlsx,
     slugify,
 )
 
@@ -158,7 +159,7 @@ def load_tables(conn: sqlite3.Connection, table_ids: List[str]) -> Dict[str, Lis
 def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[str, Any]]:
     """
     Read a tabular file into a list of row dictionaries.
-    Supports: CSV/TSV, XLSX/XLSM, ODS (via soffice -> CSV).
+    Supports: CSV/TSV, XLSX/XLSM, ODS (via soffice -> XLSX).
     """
     if not path or not path.exists() or not path.is_file():
         return []
@@ -264,62 +265,6 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
 
         return out
 
-    def _ods_to_csv(ods_path: Path):
-        import shutil
-        import tempfile
-        from contextlib import contextmanager
-        import subprocess
-
-        soffice = shutil.which("soffice") or shutil.which("libreoffice")
-        if not soffice:
-            return None, None
-
-        @contextmanager
-        def _exclusive_soffice():
-            # align with your existing locking convention
-            lock_path = Path(os.environ.get("SOFFICE_LOCK_FILE", "/tmp/soffice-convert.lock"))
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(lock_path, "w") as lock_file:
-                try:
-                    import fcntl
-                    fcntl.flock(lock_file, fcntl.LOCK_EX)
-                except Exception:
-                    pass
-                try:
-                    yield
-                finally:
-                    try:
-                        import fcntl
-                        fcntl.flock(lock_file, fcntl.LOCK_UN)
-                    except Exception:
-                        pass
-
-        outdir = Path(tempfile.mkdtemp(prefix="ods2csv-"))
-        cmd = [
-            soffice,
-            "--headless",
-            "--nologo",
-            "--nolockcheck",
-            "--nodefault",
-            "--norestore",
-            "--convert-to",
-            "csv",
-            "--outdir",
-            str(outdir),
-            str(ods_path),
-        ]
-
-        try:
-            with _exclusive_soffice():
-                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, check=False)
-        except Exception:
-            return None, outdir
-
-        csv_files = sorted(list(outdir.glob("*.csv")) + list(outdir.glob("*.CSV")))
-        if not csv_files:
-            return None, outdir
-        return csv_files[0], outdir
-
     # Dispatch by extension
     if ext in {".csv", ".tsv", ".txt"}:
         return _read_csv(path)
@@ -328,10 +273,10 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
         return _read_xlsx(path)
 
     if ext == ".ods":
-        csv_path, tmpdir = _ods_to_csv(path)
+        xlsx_path, tmpdir = convert_ods_to_xlsx(path)
         try:
-            if csv_path:
-                return _read_csv(csv_path)
+            if xlsx_path:
+                return _read_xlsx(xlsx_path)
             return []
         finally:
             # cleanup conversion dir
