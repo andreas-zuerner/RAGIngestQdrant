@@ -59,6 +59,7 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
 ## Repository overview
 
 | File | Role | Required | Used by |
+| --- | --- | --- | --- |
 | brain_scan.sh | Start/stop/status wrapper for the ingestion pipeline (sets ENV, starts scheduler, logging) | Yes | Operator
 | scan_scheduler.py | Scans Nextcloud, enqueues jobs, controls parallel workers | Yes | brain_scan.sh
 | ingest_worker.py | Core ingestion worker: download, Docling extraction, relevance, chunking, context, image upload, SQL persistence | Yes | Scheduler
