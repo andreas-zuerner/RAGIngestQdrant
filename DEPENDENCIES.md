@@ -91,6 +91,41 @@ cp .env.local.example .env.local
 # anschließend DB_PATH, BRAIN_API_KEY usw. konfigurieren
 ```
 
+### Ingestion overview & key environment variables
+
+* **Input discovery (Nextcloud):** `NEXTCLOUD_DOC_DIR` ist der Scan-Wurzelpfad,
+  `EXCLUDE_GLOBS` blendet Muster aus. Der Scheduler legt pro Lauf maximal
+  `MAX_JOBS_PER_PASS` Jobs an und schläft `SLEEP_SECS` Sekunden dazwischen.
+* **docling-serve:** `DOCLING_SERVE_URL` (Sync), `DOCLING_SERVE_USE_ASYNC`
+  aktiviert die Async-Pipeline, optional überschrieben durch
+  `DOCLING_SERVE_ASYNC_URL` mit Timeouts über
+  `DOCLING_SERVE_TIMEOUT`/`DOCLING_SERVE_ASYNC_TIMEOUT` und Poll-Intervallen
+  via `DOCLING_SERVE_ASYNC_POLL_INTERVAL`. Die parallel laufenden
+  docling-Aufträge werden per `MAX_WORKERS` (setzt intern `DOCLING_MAX_WORKERS`)
+  begrenzt; die nachgelagerte Pipeline nutzt `PIPELINE_WORKERS`.
+* **Dateirouting:** Erweiterte Dateitypen werden über `.env.local` gesteuert:
+
+  | Kategorie | Erweiterbar über | Umschalter | Route |
+  | --- | --- | --- | --- |
+  | Standardformate | `FILE_TYPES_STANDARD` | – | Direkt zu docling-serve. |
+  | Office/ODF | `FILE_TYPES_SOFFICE` | `ENABLE_SOFFICE_TYPES` | Vorab-Konvertierung mit `soffice`, anschließend docling-serve. |
+  | Tabellen | `FILE_TYPES_TABLE` | – | Tabellen werden zusätzlich geparsed und in SQLite gespeichert; Relevanzprüfung wird übersprungen. |
+  | MS-Extended | `FILE_TYPES_MS_EXTENDED` | `ENABLE_MS_EXTENDED_TYPES` | Gehen durch die Text-Fallback-Pipeline, falls docling sie nicht unterstützt. |
+  | Audio/Video | `FILE_TYPES_AUDIO` | `ENABLE_AUDIO_TYPES` | Nicht für docling vorgesehen; best-effort Text-Fallback. |
+
+* **Relevanz & Chunking:** Relevanz läuft über `OLLAMA_HOST` +
+  `OLLAMA_MODEL_RELEVANCE` mit Schwelle `RELEVANCE_THRESHOLD`. Chunking nutzt
+  `OLLAMA_MODEL_CHUNKING`, `BRAIN_CHUNK_TOKENS`, `OVERLAP`, `MAX_CHUNKS`.
+  Kontextanreicherung erfolgt via `OLLAMA_MODEL_CONTEXT`.
+* **Brain-Ingest:** `BRAIN_URL`, `BRAIN_API_KEY`, `BRAIN_COLLECTION`,
+  Timeout `BRAIN_REQUEST_TIMEOUT`.
+* **Persistenz & Storage:** `DB_PATH` zeigt auf die SQLite-Datenbank
+  (`DocumentDatabase/state.db` per Default) mit den Tabellen `files` (alle
+  gescannten Pfade), `jobs` (Queue), `decision_log` (Schrittprotokoll) sowie
+  `table_registry`/`table_data` für extrahierte Tabellen. Vektorisierte Texte
+  landen via Brain-Service in der Qdrant-Collection `BRAIN_COLLECTION`; Bilder
+  werden in `NEXTCLOUD_IMAGE_DIR` abgelegt.
+
 ## Running the services
 
 1. Activate the virtual environment and ensure dependencies are installed.
@@ -129,10 +164,11 @@ Afterwards the UI is available at `http://<host>:8081`.
 
 ## Working with OpenDocument files
 
-OpenDocument Text (`.odt`) and related formats can be placed in
-`ct109-data/scan_root/`. The ingest worker now recognises these archives, pulls
-text content from the `content.xml` payload and keeps the LLM/Brain interfaces
-unchanged.
+OpenDocument- und klassische Office-Formate werden vor der Textextraktion mit
+`soffice` konvertiert (`.ods` → `.xlsx`, andere → PDF) und dann an den
+`docling-serve`-Endpoint geschickt. Installiere LibreOffice/OpenOffice, wenn du
+die Konvertierung nutzen möchtest; ohne `soffice` schickt der Worker die
+Originaldateien direkt an `docling-serve`.
 
 ## Optional components
 
