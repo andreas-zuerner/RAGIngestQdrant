@@ -57,24 +57,25 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
    Die Konsolen-Ausgabe befindet sich in `logs/scan_scheduler.log`.
 
 ## Repository overview
-File | Role | Required | Used by
-brain_scan.sh | Start/stop/status wrapper for the ingestion pipeline (sets ENV, starts scheduler, logging) | Yes | Operator
-scan_scheduler.py | Scans Nextcloud, enqueues jobs, controls parallel workers | Yes | brain_scan.sh
-ingest_worker.py | Core ingestion worker: download, Docling extraction, relevance, chunking, context, image upload, SQL persistence | Yes | Scheduler
-text_extraction.py | Docling-Serve client (sync + async polling), document conversion helpers | Yes | Worker
-nextcloud_client.py | Nextcloud WebDAV abstraction (walk, download, upload, delete) | Yes | Scheduler, Worker, GUI
-chunking.py | LLM-based semantic chunking via Ollama | Yes | Worker
-add_context.py | Context enrichment for chunks before vector ingestion | Yes | Worker
-helpers.py | SQLite schema creation and shared DB helpers | Yes | Scheduler, Worker
-initENV.py | Central environment defaults and configuration | Yes | All runtime components
-prompt_store.py | Prompt loading and access abstraction | Yes | Worker, GUI
-prompts.json | Prompt definitions (relevance, chunking, context, etc.) | Yes | Prompt store
-web_gui.py | Optional web UI for controlling pipeline, prompts and reset operations | Optional | Operator
-gui.html | Frontend for web_gui.py | Optional | GUI
-test_nextcloud_client.py | Developer test for Nextcloud client | No (dev only) | Developers
-main_brain_not_part_of_this_folder.py | Example FastAPI “Brain” service (not part of ingestion pipeline) | No (example) | Demo
-schema.sql | Legacy SQL schema (superseded by helpers.ensure_db) | No (legacy) | —
-normalize_timesteps.sql | Legacy maintenance SQL for timestamp normalization | No (legacy) | —
+
+| File | Role | Required | Used by
+| brain_scan.sh | Start/stop/status wrapper for the ingestion pipeline (sets ENV, starts scheduler, logging) | Yes | Operator
+| scan_scheduler.py | Scans Nextcloud, enqueues jobs, controls parallel workers | Yes | brain_scan.sh
+| ingest_worker.py | Core ingestion worker: download, Docling extraction, relevance, chunking, context, image upload, SQL persistence | Yes | Scheduler
+| text_extraction.py | Docling-Serve client (sync + async polling), document conversion helpers | Yes | Worker
+| nextcloud_client.py | Nextcloud WebDAV abstraction (walk, download, upload, delete) | Yes | Scheduler, Worker, GUI
+| chunking.py | LLM-based semantic chunking via Ollama | Yes | Worker
+| add_context.py | Context enrichment for chunks before vector ingestion | Yes | Worker
+| helpers.py | SQLite schema creation and shared DB helpers | Yes | Scheduler, Worker
+| initENV.py | Central environment defaults and configuration | Yes | All runtime components
+| prompt_store.py | Prompt loading and access abstraction | Yes | Worker, GUI
+| prompts.json | Prompt definitions (relevance, chunking, context, etc.) | Yes | Prompt store
+| web_gui.py | Optional web UI for controlling pipeline, prompts and reset operations | Optional | Operator
+| gui.html | Frontend for web_gui.py | Optional | GUI
+| test_nextcloud_client.py | Developer test for Nextcloud client | No (dev only) | Developers
+| main_brain_not_part_of_this_folder.py | Example FastAPI “Brain” service (not part of ingestion pipeline) | No (example) | Demo
+| schema.sql | Legacy SQL schema (superseded by helpers.ensure_db) | No (legacy) | —
+| normalize_timesteps.sql | Legacy maintenance SQL for timestamp normalization | No (legacy) | —
 Notes on database schema
 
 The SQLite database schema is created programmatically via helpers.ensure_db() on startup.
