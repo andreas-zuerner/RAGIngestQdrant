@@ -70,12 +70,11 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
 
 ## Nextcloud-Einbindung und docling-serve
 
-* Der Scheduler durchsucht standardmäßig zwei Nextcloud-Ordner per WebDAV: einen
-  Dokumente-Ordner (`NEXTCLOUD_DOC_DIR`, Default `/RAGdocuments`) und
-  einen Bilder-Ordner (`NEXTCLOUD_IMAGE_DIR`, Default
-  `/RAG-images`). Der Bilder-Ordner wird von der SQLite-Datenbank genauso
-  überwacht wie der Dokument-Ordner und kann dadurch bequem mit einer
-  Admin-Oberfläche wie phpLiteAdmin gepflegt werden.
+* Der Scheduler durchsucht per WebDAV den Dokumente-Ordner
+  (`NEXTCLOUD_DOC_DIR`, Default `/RAGdocuments`; die Beispiel-`.env.local` setzt
+  `/nextcloud/documents`). Der Bilder-Ordner (`NEXTCLOUD_IMAGE_DIR`, Default
+  `/RAG-images`) wird nicht gescannt, sondern nur für Uploads der extrahierten
+  Bilder genutzt.
 * `scan_scheduler.py` initialisiert den WebDAV-Client über `env_client()` und
   läuft mit `client.walk(...)` rekursiv über die oben genannten Nextcloud-
   Ordner. So landen neu hochgeladene Dateien unmittelbar als Jobs in der
@@ -99,6 +98,67 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
   `http://192.168.177.130:5001/v1/convert/file`). Der Dienst liefert Text und
   erkannte Bilder; letztere werden im Bilder-Ordner abgelegt und im Text mit
   eindeutigen Referenzen (`![…](<pfad>)`) vermerkt.
+
+## Ingestion-Pipeline und Dateirouting
+
+1. **Scan Scheduler (`scan_scheduler.py`)**
+   * Läuft periodisch über `NEXTCLOUD_DOC_DIR` (Default `/RAGdocuments`).
+   * Blendet Dateien aus, die auf `EXCLUDE_GLOBS` passen.
+   * Enqueued pro Durchlauf höchstens `MAX_JOBS_PER_PASS` Einträge und schläft
+     dazwischen `SLEEP_SECS` Sekunden. Sowohl die Docling-Extraktion (intern
+     `DOCLING_MAX_WORKERS`, gesteuert per `MAX_WORKERS`) als auch die
+     nachgelagerte Pipeline (`PIPELINE_WORKERS`) sind über Umgebungsvariablen
+     begrenzt, sodass parallel nur die gewünschte Anzahl an Dokumenten
+     verarbeitet wird.
+
+2. **Download & Vorbereitung** im Worker (`ingest_worker.py`)
+   * Falls die Datei lokal fehlt, lädt `NextcloudClient.download_to_temp(...)`
+     sie aus Nextcloud nach (`NEXTCLOUD_BASE_URL`, `NEXTCLOUD_USER`,
+     `NEXTCLOUD_TOKEN`). Erkannte Bilder landen im Upload-Ordner
+     `NEXTCLOUD_IMAGE_DIR`.
+   * Je nach Dateiendung wird entschieden, welcher Pfad genutzt wird:
+
+     | Kategorie | Gesteuert über | Route |
+     | --- | --- | --- |
+     | Standardformate (`FILE_TYPES_STANDARD`) | aktiv | Direkt an `docling-serve`.
+     | Office/ODF (`FILE_TYPES_SOFFICE`, nur wenn `ENABLE_SOFFICE_TYPES=1`) | aktiv | Vorab-Konvertierung mit `soffice` (`.ods` → `.xlsx`, Rest → PDF) und dann `docling-serve`.
+     | Tabellen (`FILE_TYPES_TABLE`) | aktiv | Wie oben extrahiert, zusätzlich werden die Tabellen-Zeilen gelesen und in SQLite abgelegt. Relevanzprüfung wird übersprungen; es entsteht genau ein (ggf. gekürzter) Zusammenfassungs-Chunk.
+     | Erweiterte MS-Formate (`FILE_TYPES_MS_EXTENDED`, `ENABLE_MS_EXTENDED_TYPES`) | optional | `docling-serve` wird übersprungen; Fallback liest die Binärdatei best-effort als Text.
+     | Audio/Video (`FILE_TYPES_AUDIO`, `ENABLE_AUDIO_TYPES`) | optional | Nicht für die Docling-Pipeline vorgesehen; fällt auf best-effort-Text-Decode zurück.
+     | Sonstige | – | werden zwar akzeptiert, landen aber direkt im generischen Text-Fallback.
+
+   * `DOCLING_SERVE_USE_ASYNC=1` nutzt den asynchronen Endpoint (falls
+     konfiguriert über `DOCLING_SERVE_ASYNC_URL`). Timeouts und Polling werden
+     über `DOCLING_SERVE_TIMEOUT`, `DOCLING_SERVE_ASYNC_TIMEOUT` und
+     `DOCLING_SERVE_ASYNC_POLL_INTERVAL` gesteuert.
+
+3. **Relevanz & Chunking**
+   * Tabellen-Dateien gelten automatisch als relevant.
+   * Für alle anderen Formate bewertet Ollama (`OLLAMA_HOST`,
+     `OLLAMA_MODEL_RELEVANCE`) die Relevanz. Die Verarbeitung endet, wenn die
+     Konfidenz unter `RELEVANCE_THRESHOLD` liegt.
+   * Chunking erfolgt per LLM (`OLLAMA_MODEL_CHUNKING`, Tokenlimit
+     `BRAIN_CHUNK_TOKENS`, Overlap `OVERLAP`, Maximalanzahl `MAX_CHUNKS`).
+     Fällt das LLM aus, werden Docling-Chunks als Fallback genutzt.
+
+4. **Kontext & Embedding**
+   * `add_context.py` reichert die Chunks mit Kontext an (`OLLAMA_MODEL_CONTEXT`).
+   * Anschließend sendet der Worker die finalen Chunks an den Brain-Dienst
+     (`BRAIN_URL`, `BRAIN_API_KEY`, `BRAIN_COLLECTION`) mit Timeout
+     `BRAIN_REQUEST_TIMEOUT`. Bilder werden vorher in `NEXTCLOUD_IMAGE_DIR`
+     hochgeladen und in den Text eingebettet.
+
+5. **Persistenz**
+   * Metadaten und Verarbeitungsstatus liegen in der SQLite-Datenbank unter
+     `DB_PATH` (Default `DocumentDatabase/state.db`). Dort werden u. a. die
+     gefundenen Dateien (`files`), die verplanten Jobs (`jobs`), Entscheidungen
+     (`decision_log`) sowie extrahierte Tabellen (`table_registry` /
+     `table_data`) gespeichert.
+   * Vektorisierte Texte gehen per Brain-Endpoint in die konfigurierte
+     Qdrant-Collection (`BRAIN_COLLECTION`) des Brain-Dienstes; die lokalen
+     Tabellen-Referenzen bleiben parallel in SQLite erhalten.
+   * Extrahierte Bilder werden in `NEXTCLOUD_IMAGE_DIR` abgelegt, referenziert
+     im gespeicherten Text und bleiben damit unabhängig vom lokalen Dateisystem.
 
 ### Office-Dokumente (ODF/Office → PDF)
 
