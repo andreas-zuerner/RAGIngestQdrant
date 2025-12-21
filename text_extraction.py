@@ -10,6 +10,7 @@ call :func:`extract_document` and work with the returned data.
 from __future__ import annotations
 
 import base64
+import fcntl
 import importlib
 import json
 import logging
@@ -22,7 +23,6 @@ import subprocess
 import tempfile
 import time
 import unicodedata
-import fcntl
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,9 +30,8 @@ from typing import Dict, List, Optional, Tuple
 from contextlib import contextmanager, nullcontext
 
 import requests
-from nextcloud_client import NextcloudClient, env_client
-
-import initENV
+from helpers.nextcloud_client import NextcloudClient, env_client
+from variables import initENV
 
 # Central log file used by the scan scheduler and ingest workers.
 # Must be defined before the module-level logger is configured.

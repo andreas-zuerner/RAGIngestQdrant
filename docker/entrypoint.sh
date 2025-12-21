@@ -5,9 +5,9 @@ set -euo pipefail
 DATA_DIR="${DATA_DIR:-/data}"
 DB_DIR="${DB_DIR:-${DATA_DIR}/DocumentDatabase}"
 LOG_DIR="${LOG_DIR:-${DATA_DIR}/logs}"
-ENV_FILE="${ENV_FILE:-${DATA_DIR}/.env.local}"
+ENV_FILE="${ENV_FILE:-${DATA_DIR}/variables/.env.local}"
 
-mkdir -p "${DB_DIR}" "${LOG_DIR}"
+mkdir -p "${DB_DIR}" "${LOG_DIR}" "$(dirname "${ENV_FILE}")"
 
 # Create a minimal default env file on first run (persisted in the volume).
 # This keeps config editable without rebuilding images, and prevents surprises.
@@ -16,7 +16,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 # --- RAGIngestQdrant runtime config (Docker default) ---
 # Adjust as needed. This file is persisted in the rag_data volume.
 
-# SQLite DB (override is supported; scan_scheduler reads initENV.DB_PATH)
+# SQLite DB (override is supported; scan_scheduler reads variables.initENV.DB_PATH)
 DB_PATH=/data/DocumentDatabase/state.db
 SCHEDULER_LOG=/data/logs/scan_scheduler.log
 
@@ -54,7 +54,7 @@ EOF
   echo "[entrypoint] created ${ENV_FILE}"
 fi
 
-# Export ENV_FILE for initENV.py; also source it so supervisor children inherit values.
+# Export ENV_FILE for variables/initENV.py; also source it so supervisor children inherit values.
 export ENV_FILE
 set -a
 # shellcheck disable=SC1090

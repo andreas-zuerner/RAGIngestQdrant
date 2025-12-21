@@ -23,13 +23,12 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from urllib.parse import unquote
 
 import requests
-from nextcloud_client import env_client, NextcloudClient, NextcloudError
-
-import initENV
-from add_context import enrich_chunks_with_context
-from chunking import chunk_document_with_llm_fallback
-from helpers import compute_next_review_at, ensure_db, utcnow_iso
-from prompt_store import get_prompt
+from helpers.add_context import enrich_chunks_with_context
+from helpers.chunking import chunk_document_with_llm_fallback
+from helpers.helpers import compute_next_review_at, ensure_db, utcnow_iso
+from helpers.nextcloud_client import NextcloudClient, NextcloudError, env_client
+from helpers.prompt_store import get_prompt
+from variables import initENV
 from text_extraction import (
     DoclingChunk,
     ExtractionFailed,

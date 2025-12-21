@@ -12,11 +12,11 @@ services:
       # Persist DB + logs + env
       - ./:/data
     environment:
-      # initENV.py respects ENV_FILE; keep runtime config in the persistent volume
-      - ENV_FILE=/data/.env.local
+      # variables/initENV.py respects ENV_FILE; keep runtime config in the persistent volume
+      - ENV_FILE=/data/variables/.env.local
       - DB_PATH=/data/DocumentDatabase/state.db
       - SCHEDULER_LOG=/data/logs/scan_scheduler.log
-      # Optional: keep defaults explicit (override in /data/.env.local as needed)
+      # Optional: keep defaults explicit (override in /data/variables/.env.local as needed)
       - WEB_GUI_HOST=0.0.0.0
       - WEB_GUI_PORT=8088
     restart: unless-stopped

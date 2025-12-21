@@ -11,10 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Set
 
-from nextcloud_client import env_client, NextcloudError
-
-import initENV
-from helpers import init_conn, compute_file_id, is_due
+from helpers.helpers import compute_file_id, init_conn, is_due
+from helpers.nextcloud_client import NextcloudError, env_client
+from variables import initENV
 
 DB_PATH = initENV.DB_PATH
 LOG_PATH = Path(initENV.SCHEDULER_LOG)

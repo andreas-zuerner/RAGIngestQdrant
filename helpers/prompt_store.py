@@ -3,7 +3,9 @@ import os
 from pathlib import Path
 from typing import Dict
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
+VARIABLES_DIR = PROJECT_ROOT / "variables"
 _DEFAULT_PROMPTS: Dict[str, str] = {
     "relevance": (
         "You are a strict, privacy-aware classifier for a personal knowledge base. "
@@ -52,7 +54,7 @@ _ENV_PROMPT_KEYS: Dict[str, str] = {
 
 
 def prompt_file_path() -> Path:
-    return Path(os.environ.get("PROMPTS_FILE", PROJECT_ROOT / "prompts.json"))
+    return Path(os.environ.get("PROMPTS_FILE", VARIABLES_DIR / "prompts.json"))
 
 
 def load_prompts() -> Dict[str, str]:
@@ -87,4 +89,3 @@ def save_prompts(prompts: Dict[str, str]):
 def get_prompt(name: str) -> str:
     prompts = load_prompts()
     return prompts.get(name, _DEFAULT_PROMPTS.get(name, ""))
-

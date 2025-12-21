@@ -277,7 +277,7 @@
           {% endfor %}
         </tbody>
       </table>
-      <button type="submit">Update .env.local</button>
+      <button type="submit">Update variables/.env.local</button>
     </form>
     <form method="post" action="{{ url_for('add_env_var') }}">
       <input type="text" name="new_key" placeholder="NEW_KEY" />
@@ -293,7 +293,7 @@
   <section>
     <h2>Reset RAG</h2>
     <form method="post" action="{{ url_for('reset_all') }}">
-      <label><input type="checkbox" name="restore_defaults" /> Restore defaults from .env.local.example</label><br/>
+      <label><input type="checkbox" name="restore_defaults" /> Restore defaults from variables/.env.local.example</label><br/>
       <button type="submit" onclick="return confirm('This will delete Qdrant data, state.db, and Nextcloud images. Continue?');">Reset everything</button>
     </form>
     <p>Deletes all Qdrant entries, removes the local state database, clears images in Nextcloud ({{ qdrant_collection }} collection), and optionally restores default environment values.</p>

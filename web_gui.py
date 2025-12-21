@@ -11,13 +11,13 @@ from urllib.parse import urljoin
 import requests
 from flask import Flask, flash, redirect, render_template, request, url_for
 
-import initENV
-from helpers import init_conn
-from nextcloud_client import env_client
+from helpers import prompt_store
+from helpers.helpers import init_conn
+from helpers.nextcloud_client import env_client
 from scan_scheduler import mark_deleted
-import prompt_store
+from variables import initENV
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder="helpers")
 app.secret_key = initENV.WEB_GUI_SECRET
 
 PROJECT_ROOT = initENV.PROJECT_ROOT
@@ -560,7 +560,7 @@ def reset_all():
     messages = [reset_qdrant(), reset_state_db(), reset_nextcloud_images()]
     if restore_defaults and EXAMPLE_ENV.exists():
         ENV_FILE.write_text(EXAMPLE_ENV.read_text(encoding="utf-8"), encoding="utf-8")
-        messages.append("Restored .env.local from example file.")
+        messages.append("Restored variables/.env.local from example file.")
     for msg in messages:
         log_debug(f"[reset_all] {msg}")
         append_log(f"[reset_all] {msg}")

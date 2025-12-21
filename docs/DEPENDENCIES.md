@@ -67,7 +67,7 @@ To tweak performance you can set the following environment variables:
   `60` seconds)
 
 Enable the OCR fallback by setting `ENABLE_OCR=1` in your environment or
-`.env.local`. When `docling` is installed (see the upstream project at
+`variables/.env.local`. When `docling` is installed (see the upstream project at
 https://docling-project.github.io/docling/), the ingest worker automatically
 uses its unified parsing pipeline (including hybrid chunking, layout-aware
 splitting and optional OCR support) instead of the custom heuristics that were
@@ -82,12 +82,12 @@ previously bundled with this repository.
 
 ## Configuration
 
-Environment variables reside in `.env.local`. A full example (`.env.local.example`)
+Environment variables reside in `variables/.env.local`. A full example (`variables/.env.local.example`)
 contains all keys (database path, scan roots, Brain/Ollama endpoints). Copy and
 adjust it for your environment:
 
 ```bash
-cp .env.local.example .env.local
+cp variables/.env.local.example variables/.env.local
 # anschließend DB_PATH, BRAIN_API_KEY usw. konfigurieren
 ```
 
@@ -103,7 +103,7 @@ cp .env.local.example .env.local
   via `DOCLING_SERVE_ASYNC_POLL_INTERVAL`. Die parallel laufenden
   docling-Aufträge werden per `MAX_WORKERS` (setzt intern `DOCLING_MAX_WORKERS`)
   begrenzt; die nachgelagerte Pipeline nutzt `PIPELINE_WORKERS`.
-* **Dateirouting:** Erweiterte Dateitypen werden über `.env.local` gesteuert:
+* **Dateirouting:** Erweiterte Dateitypen werden über `variables/.env.local` gesteuert:
 
   | Kategorie | Erweiterbar über | Umschalter | Route |
   | --- | --- | --- | --- |
@@ -129,7 +129,7 @@ cp .env.local.example .env.local
 ## Running the services
 
 1. Activate the virtual environment and ensure dependencies are installed.
-2. Copy and edit `.env.local` as described above.
+2. Copy and edit `variables/.env.local` as described above.
 3. Start scanner and worker together via the control script:
 
    ```bash
@@ -173,5 +173,5 @@ Originaldateien direkt an `docling-serve`.
 ## Optional components
 
 - **Web GUI (`web_gui.py`):** install `flask` alongside `requests` to run the control panel.
-- **Demo Brain service (`main_brain_not_part_of_this_folder.py`):** install `fastapi`, `uvicorn`,
+- **Demo Brain service (`archive/main_brain_not_part_of_this_folder.py`):** install `fastapi`, `uvicorn`,
   `httpx`, `pydantic`, `pydantic-settings`, and `pypdf` to start the example FastAPI backend.
