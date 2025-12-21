@@ -1281,7 +1281,10 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
             # Only sample for add_context (keep payload small)
             table_lookup = {table_id: table_rows[:25]}
 
-            clean_with_tables = f"{clean_with_tables}\n\n[TABLE:{table_id}]"
+           table_ref = f"[TABLE:{table_id}]"
+
+           if table_ref not in clean_with_tables:
+               clean_with_tables = f"{table_ref}\n\n{clean_with_tables}"
 
             safe_log(conn, job_id, file_id, "table_import_original_ok",
                      f"rows={len(table_rows)} src={src_path}")
