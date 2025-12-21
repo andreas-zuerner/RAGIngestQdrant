@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from prompt_store import get_prompt
+from .prompt_store import get_prompt
 
 PROMPT_TEMPLATE = """{system}\n\n---\n\nTEXT SEGMENT:\n{segment}"""
 

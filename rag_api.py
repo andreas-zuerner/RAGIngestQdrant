@@ -7,7 +7,7 @@ Purpose:
 - Keep it minimal and non-invasive: no new ingestion logic, no heavy refactors.
 
 Notes:
-- Uses DB_PATH from initENV.py (which respects ENV_FILE and environment variables).
+- Uses DB_PATH from variables/initENV.py (which respects ENV_FILE and environment variables).
 - If your schema evolves, adjust the SQL queries accordingly.
 """
 
@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-import initENV
+from variables import initENV
 
 app = FastAPI(title="RAGIngestQdrant API", version="0.1.0")
 

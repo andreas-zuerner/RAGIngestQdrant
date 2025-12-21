@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from prompt_store import get_prompt
+from .prompt_store import get_prompt
 
 CONTEXT_MIN_WORDS = 50
 CONTEXT_MAX_WORDS = 500

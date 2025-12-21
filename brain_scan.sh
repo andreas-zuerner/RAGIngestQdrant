@@ -28,7 +28,7 @@ if is_docker; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$ROOT_DIR/.env.local"
+ENV_FILE="$ROOT_DIR/variables/.env.local"
 PID_DIR="$ROOT_DIR/.run"
 PID_FILE="$PID_DIR/scan_scheduler.pid"
 LOG_DIR="$ROOT_DIR/logs"
@@ -48,7 +48,7 @@ USAGE
 
 require_env() {
     if [[ ! -f "$ENV_FILE" ]]; then
-        echo "Missing $ENV_FILE. Copy .env.local.example and adjust the values." >&2
+        echo "Missing $ENV_FILE. Copy variables/.env.local.example and adjust the values." >&2
         exit 1
     fi
 }
@@ -64,7 +64,7 @@ load_env() {
 ensure_python() {
     if [[ ! -x "$PYTHON_BIN" ]]; then
         echo "Python virtualenv not found at $PYTHON_BIN" >&2
-        echo "Create it first, e.g. python3 -m venv .venv && .venv/bin/pip install -r DEPENDENCIES.md" >&2
+        echo "Create it first, e.g. python3 -m venv .venv && .venv/bin/pip install -r docs/DEPENDENCIES.md" >&2
         exit 1
     fi
 }

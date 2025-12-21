@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Python dependencies
-# Note: keep in sync with DEPENDENCIES.md / your venv installs.
+# Note: keep in sync with docs/DEPENDENCIES.md / your venv installs.
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir \
     fastapi "uvicorn[standard]" \

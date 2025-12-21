@@ -7,7 +7,7 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
 
 ## Quickstart
 
-1. Abhängigkeiten installieren (siehe `DEPENDENCIES.md`) und ein virtuelles
+1. Abhängigkeiten installieren (siehe `docs/DEPENDENCIES.md`) und ein virtuelles
    Environment vorbereiten:
 
    ```bash
@@ -20,9 +20,11 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
 2. Beispiel-Konfiguration übernehmen und anpassen:
 
    ```bash
-   cp .env.local.example .env.local
+   cp variables/.env.local.example variables/.env.local
    # anschließend die Schlüssel wie BRAIN_API_KEY, OLLAMA_HOST usw. anpassen
    ```
+
+   Die Standardpfade liegen im Verzeichnis `variables/` (steuerbar über `ENV_FILE` in `variables/initENV.py`).
 
    Relevante Parameter für den Brain-Dienst:
 
@@ -58,29 +60,39 @@ Texte, bevor sie zur Persistierung weitergereicht werden.
 
 ## Repository overview
 
-| File | Role | Required | Used by |
+| Path | Role | Required | Used by |
 | --- | --- | --- | --- |
-| brain_scan.sh | Start/stop/status wrapper for the ingestion pipeline (sets ENV, starts scheduler, logging) | Yes | Operator
-| scan_scheduler.py | Scans Nextcloud, enqueues jobs, controls parallel workers | Yes | brain_scan.sh
-| ingest_worker.py | Core ingestion worker: download, Docling extraction, relevance, chunking, context, image upload, SQL persistence | Yes | Scheduler
-| text_extraction.py | Docling-Serve client (sync + async polling), document conversion helpers | Yes | Worker
-| nextcloud_client.py | Nextcloud WebDAV abstraction (walk, download, upload, delete) | Yes | Scheduler, Worker, GUI
-| chunking.py | LLM-based semantic chunking via Ollama | Yes | Worker
-| add_context.py | Context enrichment for chunks before vector ingestion | Yes | Worker
-| helpers.py | SQLite schema creation and shared DB helpers | Yes | Scheduler, Worker
-| initENV.py | Central environment defaults and configuration | Yes | All runtime components
-| prompt_store.py | Prompt loading and access abstraction | Yes | Worker, GUI
-| prompts.json | Prompt definitions (relevance, chunking, context, etc.) | Yes | Prompt store
-| web_gui.py | Optional web UI for controlling pipeline, prompts and reset operations | Optional | Operator
-| gui.html | Frontend for web_gui.py | Optional | GUI
-| test_nextcloud_client.py | Developer test for Nextcloud client | No (dev only) | Developers
-| main_brain_not_part_of_this_folder.py | Example FastAPI “Brain” service (not part of ingestion pipeline) | No (example) | Demo
-| schema.sql | Legacy SQL schema (superseded by helpers.ensure_db) | No (legacy) | —
-| normalize_timesteps.sql | Legacy maintenance SQL for timestamp normalization | No (legacy) | —
+| brain_scan.sh | Start/stop/status wrapper for the ingestion pipeline (sets ENV, starts scheduler, logging) | Yes | Operator |
+| scan_scheduler.py | Scans Nextcloud, enqueues jobs, controls parallel workers | Yes | brain_scan.sh |
+| ingest_worker.py | Core ingestion worker: download, Docling extraction, relevance, chunking, context, image upload, SQL persistence | Yes | Scheduler |
+| text_extraction.py | Docling-Serve client (sync + async polling), document conversion helpers | Yes | Worker |
+| helpers/nextcloud_client.py | Nextcloud WebDAV abstraction (walk, download, upload, delete) | Yes | Scheduler, Worker, GUI |
+| helpers/chunking.py | LLM-based semantic chunking via Ollama | Yes | Worker |
+| helpers/add_context.py | Context enrichment for chunks before vector ingestion | Yes | Worker |
+| helpers/helpers.py | SQLite schema creation and shared DB helpers | Yes | Scheduler, Worker |
+| helpers/prompt_store.py | Prompt loading and access abstraction | Yes | Worker, GUI |
+| helpers/gui.html | Frontend for web_gui.py | Optional | GUI |
+| helpers/test_nextcloud_client.py | Developer test for Nextcloud client | No (dev only) | Developers |
+| variables/initENV.py | Central environment defaults and configuration | Yes | All runtime components |
+| variables/prompts.json | Prompt definitions (relevance, chunking, context, etc.) | Yes | Prompt store |
+| variables/.env.local.example | Example environment configuration | No (template) | Developers/operators |
+| web_gui.py | Optional web UI for controlling pipeline, prompts and reset operations | Optional | Operator |
+| archive/main_brain_not_part_of_this_folder.py | Example FastAPI “Brain” service (not part of ingestion pipeline) | No (archived) | Demo |
+| archive/schema.sql | Legacy SQL schema (superseded by helpers.ensure_db) | No (legacy) | — |
+| archive/normalize_timesteps.sql | Legacy maintenance SQL for timestamp normalization | No (legacy) | — |
+| archive/AddContext.js | Legacy JS prototype for context handling | No (archived) | — |
+| archive/Chunking.js | Legacy JS prototype for chunking | No (archived) | — |
+
+Directory layout highlights:
+
+* `docs/` – project documentation (this file, dependencies).
+* `helpers/` – reusable ingestion helpers (Python utilities and the GUI template).
+* `variables/` – configuration defaults and prompt definitions.
+* `archive/` – legacy assets retained for reference only.
 Notes on database schema
 
-The SQLite database schema is created programmatically via helpers.ensure_db() on startup.
-The files schema.sql and normalize_timesteps.sql are legacy artifacts and are not required for normal operation.
+The SQLite database schema is created programmatically via `helpers.helpers.ensure_db()` on startup.
+The files in `archive/schema.sql` and `archive/normalize_timesteps.sql` are legacy artifacts and are not required for normal operation.
 
 ## LLM-Modellwahl pro Verarbeitungsschritt
 
@@ -97,8 +109,8 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
 ## Nextcloud-Einbindung und docling-serve
 
 * Der Scheduler durchsucht per WebDAV den Dokumente-Ordner
-  (`NEXTCLOUD_DOC_DIR`, Default `/RAGdocuments`; die Beispiel-`.env.local` setzt
-  `/nextcloud/documents`). Der Bilder-Ordner (`NEXTCLOUD_IMAGE_DIR`, Default
+  (`NEXTCLOUD_DOC_DIR`, Default `/RAGdocuments`; die Beispiel-`variables/.env.local`
+  setzt `/nextcloud/documents`). Der Bilder-Ordner (`NEXTCLOUD_IMAGE_DIR`, Default
   `/RAG-images`) wird nicht gescannt, sondern nur für Uploads der extrahierten
   Bilder genutzt.
 * `scan_scheduler.py` initialisiert den WebDAV-Client über `env_client()` und
@@ -116,7 +128,7 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
   getrennt nach Dokumenten.
 * Die Nextcloud-Instanz ist über `http://192.168.177.133:8080` erreichbar. Der
   Standardbenutzer lautet `andreas`; der dazugehörige API-Token wird in
-  `.env.local` unter `NEXTCLOUD_TOKEN` hinterlegt und beim Starten des Scans
+  `variables/.env.local` unter `NEXTCLOUD_TOKEN` hinterlegt und beim Starten des Scans
   automatisch als Umgebungsvariable geladen.
 * Für die Textextraktion wird kein lokales `docling` mehr benötigt. Stattdessen
   spricht der Worker den bereitgestellten Webservice
@@ -168,7 +180,7 @@ Bleiben diese Variablen leer, greift automatisch das allgemeine Modell aus `OLLA
      Fällt das LLM aus, werden Docling-Chunks als Fallback genutzt.
 
 4. **Kontext & Embedding**
-   * `add_context.py` reichert die Chunks mit Kontext an (`OLLAMA_MODEL_CONTEXT`).
+   * `helpers/add_context.py` reichert die Chunks mit Kontext an (`OLLAMA_MODEL_CONTEXT`).
    * Anschließend sendet der Worker die finalen Chunks an den Brain-Dienst
      (`BRAIN_URL`, `BRAIN_API_KEY`, `BRAIN_COLLECTION`) mit Timeout
      `BRAIN_REQUEST_TIMEOUT`. Bilder werden vorher in `NEXTCLOUD_IMAGE_DIR`
@@ -231,7 +243,7 @@ WEB_GUI_SECRET=change-me WEB_GUI_PORT=8088 WEB_GUI_HOST=0.0.0.0 \
 python web_gui.py
 ```
 
-The GUI reads and writes `.env.local` by default (controlled via `ENV_FILE`) and requires access to Qdrant, Nextcloud, and the local `DocumentDatabase/state.db`. The reset action drops the configured Qdrant collection, removes the state database, clears the `RAG-images` folder in Nextcloud, and can optionally restore `.env.local` from `.env.local.example`.
+The GUI reads and writes `variables/.env.local` by default (controlled via `ENV_FILE`) and requires access to Qdrant, Nextcloud, and the local `DocumentDatabase/state.db`. The reset action drops the configured Qdrant collection, removes the state database, clears the `RAG-images` folder in Nextcloud, and can optionally restore `variables/.env.local` from `variables/.env.local.example`.
 
 ### LAN / reverse-proxy deployment (Apache or lighttpd)
 
@@ -260,7 +272,7 @@ The GUI must listen on the LAN for future Dockerization. Bind to all interfaces 
    chmod -R 750 /srv/rag/RAGIngestQdrant
    ```
 
-   `www-data` (or your service user) needs read/write access to `.env.local`, `DocumentDatabase/state.db`, and the `logs/` directory to reflect scheduler state and log output.
+   `www-data` (or your service user) needs read/write access to `variables/.env.local`, `DocumentDatabase/state.db`, and the `logs/` directory to reflect scheduler state and log output.
 
 3. **Run the app with a WSGI/ASGI server** (example: Gunicorn) so Apache/lighttpd can proxy it:
 
@@ -331,9 +343,9 @@ The GUI must listen on the LAN for future Dockerization. Bind to all interfaces 
 6. **File permissions for persistent state**: ensure the service user owns the runtime artifacts:
 
    ```bash
-   chown www-data:www-data /srv/rag/RAGIngestQdrant/.env.local \
+   chown www-data:www-data /srv/rag/RAGIngestQdrant/variables/.env.local \
      /srv/rag/RAGIngestQdrant/DocumentDatabase /srv/rag/RAGIngestQdrant/logs
-   chmod 640 /srv/rag/RAGIngestQdrant/.env.local
+   chmod 640 /srv/rag/RAGIngestQdrant/variables/.env.local
    chmod 750 /srv/rag/RAGIngestQdrant/DocumentDatabase /srv/rag/RAGIngestQdrant/logs
    ```
 
@@ -342,4 +354,4 @@ With `WEB_GUI_HOST=0.0.0.0`, the service is reachable from the local LAN (or Doc
 ### Optional dependencies for auxiliary components
 
 - **Web GUI:** install `flask` (plus `requests`, already included above) to run `web_gui.py`.
-- **Demo Brain service (`main_brain_not_part_of_this_folder.py`):** requires `fastapi`, `httpx`, `pydantic`, `pydantic-settings`, `pypdf`, and a server such as `uvicorn` to launch the app.
+- **Demo Brain service (`archive/main_brain_not_part_of_this_folder.py`):** requires `fastapi`, `httpx`, `pydantic`, `pydantic-settings`, `pypdf`, and a server such as `uvicorn` to launch the app.

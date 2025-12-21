@@ -6,7 +6,7 @@ from unittest import TestCase, mock
 if "requests" not in sys.modules:
     sys.modules["requests"] = types.SimpleNamespace(Session=lambda *args, **kwargs: None)
 
-from nextcloud_client import NextcloudClient
+from helpers.nextcloud_client import NextcloudClient
 
 
 class DummyResponse:
@@ -57,7 +57,7 @@ class NextcloudClientTests(TestCase):
         else:
             os.environ["NEXTCLOUD_DEBUG"] = self._orig_debug
 
-    @mock.patch("nextcloud_client.requests.Session")
+    @mock.patch("helpers.nextcloud_client.requests.Session")
     def test_login_and_list_directory(self, session_cls):
         xml = """
         <d:multistatus xmlns:d='DAV:'>
@@ -86,7 +86,7 @@ class NextcloudClientTests(TestCase):
 
         self.assertEqual(dummy.request_calls[0][0], "PROPFIND")
 
-    @mock.patch("nextcloud_client.requests.Session")
+    @mock.patch("helpers.nextcloud_client.requests.Session")
     def test_walk_yields_files(self, session_cls):
         xml = """
         <d:multistatus xmlns:d='DAV:'>
@@ -108,7 +108,7 @@ class NextcloudClientTests(TestCase):
         self.assertEqual(len(files), 1)
         self.assertEqual(files[0]["path"], "/RAGdocuments/example.txt")
 
-    @mock.patch("nextcloud_client.requests.Session")
+    @mock.patch("helpers.nextcloud_client.requests.Session")
     def test_download_to_temp(self, session_cls):
         content = b"data123"
         dummy = DummySession([DummyResponse(ok=True, iter_chunks=[content])])

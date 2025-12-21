@@ -2,9 +2,10 @@ import os
 from pathlib import Path
 from typing import Dict, Iterable, Set
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-ENV_FILE = Path(os.environ.get("ENV_FILE", PROJECT_ROOT / ".env.local"))
-ENV_EXAMPLE = Path(os.environ.get("ENV_EXAMPLE", PROJECT_ROOT / ".env.local.example"))
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
+ENV_FILE = Path(os.environ.get("ENV_FILE", BASE_DIR / ".env.local"))
+ENV_EXAMPLE = Path(os.environ.get("ENV_EXAMPLE", BASE_DIR / ".env.local.example"))
 
 _loaded_env: Dict[str, str] | None = None
 
