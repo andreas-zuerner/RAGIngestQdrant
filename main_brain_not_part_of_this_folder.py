@@ -66,6 +66,7 @@ class RetrieveIn(BaseModel):
     query: str
     limit: int = 5
     score_threshold: float | None = 0.75
+    collection: str | None = None
 
 class ChatIn(BaseModel):
     prompt: str
@@ -334,7 +335,8 @@ async def memorize(inp: MemorizeIn, _: bool = Depends(check_api_key)):
 @app.post("/retrieve")
 async def retrieve(inp: RetrieveIn, _: bool = Depends(check_api_key)):
     vec = await embed(inp.query)
-    hits = await qdrant_search(vec, limit=inp.limit, score_threshold=inp.score_threshold)
+    collection = inp.collection or settings.QDRANT_COLLECTION
+    hits = await qdrant_search(vec, limit=inp.limit, score_threshold=inp.score_threshold, collection=collection)
     # Format komprimiert zurückgeben
     return {
         "hits": [

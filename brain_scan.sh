@@ -1,6 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- Docker mode: control scheduler via supervisord (do not spawn background daemons) ---
+is_docker() {
+  # robust docker detection
+  [ -f /.dockerenv ] && return 0
+  grep -qaE '(docker|containerd|kubepods)' /proc/1/cgroup 2>/dev/null && return 0
+  return 1
+}
+
+if is_docker; then
+  ACTION="${1:-}"
+  case "$ACTION" in
+    start)
+      supervisorctl start scheduler
+      exit $?
+      ;;
+    stop)
+      supervisorctl stop scheduler
+      exit $?
+      ;;
+    status)
+      supervisorctl status scheduler
+      exit $?
+      ;;
+  esac
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$ROOT_DIR/.env.local"
 PID_DIR="$ROOT_DIR/.run"
