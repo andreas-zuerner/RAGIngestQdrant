@@ -157,11 +157,11 @@ async def health_extended():
     # prüfe ollama + qdrant kurz an
     o, q = "down", "down"
     try:
-        r = await client.get(f"{settings.OLLAMA_URL}/api/version")
+        r = await _http().get(f"{settings.OLLAMA_URL}/api/version")
         if r.status_code == 200: o = "up"
     except Exception: pass
     try:
-        r = await client.get(f"{settings.QDRANT_URL}/collections/{settings.QDRANT_COLLECTION}")
+        r = await _http().get(f"{settings.QDRANT_URL}/collections/{settings.QDRANT_COLLECTION}")
         if r.status_code in (200,404): q = "up"  # 404→existiert nicht, aber service erreichbar
     except Exception: pass
     return {
@@ -177,7 +177,11 @@ async def health_extended():
 
 # ------------------ Helpers ------------------
 TIMEOUT = httpx.Timeout(90.0, connect=5.0)
-client = httpx.AsyncClient(timeout=TIMEOUT)
+client: httpx.AsyncClient | None = None
+
+def _http() -> httpx.AsyncClient:
+    assert client is not None, "HTTP client not initialized (startup event not run?)"
+    return client
 
 async def ensure_collection(collection: str | None = None):
     # 1) Ziel-Dimension bestimmen
@@ -188,7 +192,7 @@ async def ensure_collection(collection: str | None = None):
     collection_name = resolve_collection(collection)
 
     # 2) Existenz + Dimension prüfen
-    info = await client.get(f"{settings.QDRANT_URL}/collections/{collection_name}")
+    info = await _http().get(f"{settings.QDRANT_URL}/collections/{collection_name}")
     if info.status_code == 200:
         js = info.json()
         current = (js.get("result") or {}).get("config", {}).get("params", {}).get("vectors", {})
@@ -204,7 +208,7 @@ async def ensure_collection(collection: str | None = None):
         "vectors": {"size": int(dims), "distance": "Cosine"},
         "optimizers_config": {"default_segment_number": 2}
     }
-    cr = await client.put(
+    cr = await _http().put(
         f"{settings.QDRANT_URL}/collections/{collection_name}", json=schema
     )
     if cr.status_code not in (200, 201):
@@ -212,7 +216,7 @@ async def ensure_collection(collection: str | None = None):
 
 async def detect_embed_dims(model: str) -> int:
     # schickt einen Mini-Text an /api/embeddings und liest die Länge des Vektors
-    r = await client.post(f"{settings.OLLAMA_URL}/api/embeddings",
+    r = await _http().post(f"{settings.OLLAMA_URL}/api/embeddings",
                           json={"model": model, "prompt": "ping"})
     if r.status_code != 200:
         raise RuntimeError(f"Embed ping failed: {r.text}")
@@ -224,18 +228,24 @@ async def detect_embed_dims(model: str) -> int:
 
 @app.on_event("startup")
 async def on_startup():
+    global client
+    if client is None:
+        client = httpx.AsyncClient(timeout=TIMEOUT)
     await ensure_collection()
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    await client.aclose()
+    global client
+    if client is not None:
+        await client.aclose()
+        client = None
 
 # --- replace embed() ---
 async def embed(text: str) -> list[float]:
     model = (settings.EMBED_MODEL or "nomic-embed-text").strip()
 
     async def _post(payload: dict) -> dict:
-        r = await client.post(f"{settings.OLLAMA_URL}/api/embeddings", json=payload)
+        r = await _http().post(f"{settings.OLLAMA_URL}/api/embeddings", json=payload)
         if r.status_code != 200:
             raise HTTPException(502, f"Ollama embeddings failed: {r.text}")
         return r.json()
@@ -272,7 +282,7 @@ async def embed(text: str) -> list[float]:
 async def qdrant_upsert(points: list[dict], *, collection: str | None = None):
     collection_name = resolve_collection(collection)
     await ensure_collection(collection_name)
-    r = await client.put(
+    r = await _http().put(
         f"{settings.QDRANT_URL}/collections/{collection_name}/points?wait=true",
         json={"points": points}
     )
@@ -290,7 +300,7 @@ async def qdrant_search(vec: list[float], limit: int, score_threshold: float | N
         body["score_threshold"] = score_threshold
     collection_name = resolve_collection(collection)
     await ensure_collection(collection_name)
-    r = await client.post(
+    r = await _http().post(
         f"{settings.QDRANT_URL}/collections/{collection_name}/points/search",
         json=body
     )
@@ -304,7 +314,7 @@ async def ollama_chat(system: str | None, user: str) -> str:
         msg.append({"role": "system", "content": system})
     msg.append({"role": "user", "content": user})
     jr = {"model": settings.CHAT_MODEL, "messages": msg, "stream": False}
-    r = await client.post(f"{settings.OLLAMA_URL}/api/chat", json=jr)
+    r = await _http().post(f"{settings.OLLAMA_URL}/api/chat", json=jr)
     if r.status_code != 200:
         raise HTTPException(502, f"Ollama chat failed: {r.text}")
     data = r.json()
@@ -400,7 +410,7 @@ async def admin_delete(inp: DeleteIn, _: bool = Depends(check_api_key)):
     collection_name = resolve_collection(inp.collection)
     await ensure_collection(collection_name)
 
-    r = await client.post(
+    r = await _http().post(
         f"{settings.QDRANT_URL}/collections/{collection_name}/points/delete?wait=true",
         json={"points": inp.ids},
     )
@@ -414,7 +424,7 @@ async def admin_purge(inp: PurgeIn, _: bool = Depends(check_api_key)):
     collection_name = resolve_collection(inp.collection)
     await ensure_collection(collection_name)
 
-    r = await client.post(
+    r = await _http().post(
         f"{settings.QDRANT_URL}/collections/{collection_name}/points/delete?wait=true",
         json={"filter": {"must": []}},
     )
@@ -450,7 +460,7 @@ async def admin_scroll_by_name(inp: ScrollByNameIn, _: bool = Depends(check_api_
             return
     while True:
         body = {"limit": min(inp.limit, 64), "with_payload": True, "offset": offset}
-        r = await client.post(
+        r = await _http().post(
             f"{settings.QDRANT_URL}/collections/{collection_name}/points/scroll",
             json=body,
         )
@@ -499,7 +509,7 @@ async def admin_ids_for_file(inp: FileIdsIn, _: bool = Depends(check_api_key)):
             "offset": offset,
             "filter": payload_filter,
         }
-        r = await client.post(
+        r = await _http().post(
             f"{settings.QDRANT_URL}/collections/{collection_name}/points/scroll",
             json=body,
         )
