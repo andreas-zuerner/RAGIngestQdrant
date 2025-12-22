@@ -56,6 +56,7 @@ def safe_log(conn, job_id, file_id, step, detail):
             _log_counters[job_id] = c + 1
         log_decision(conn, job_id, file_id, step, detail[:500])  # detail begrenzen
     except Exception:
+        logging.exception("Failed to write decision log entry")
         pass
 
 
@@ -145,11 +146,13 @@ def load_tables(conn: sqlite3.Connection, table_ids: List[str]) -> Dict[str, Lis
             tid = row["table_id"]
             row_json = row["row_json"]
         except Exception:
+            logging.exception("Failed to access table row columns for table data load")
             tid = row[0]
             row_json = row[2]
         try:
             parsed = json.loads(row_json)
         except Exception:
+            logging.exception("Failed to decode table row JSON during load")
             parsed = {"raw": row_json}
         tables.setdefault(tid, []).append(parsed)
     return tables
@@ -182,12 +185,13 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
         if isinstance(v, (str, int, float, bool)):
             return v
         # datetime/date-like
-        if hasattr(v, "isoformat"):
-            try:
-                return v.isoformat()
-            except Exception:
-                pass
-        return str(v)
+            if hasattr(v, "isoformat"):
+                try:
+                    return v.isoformat()
+                except Exception:
+                    logging.exception("Failed to convert value to JSON-serializable string")
+                    pass
+            return str(v)
 
     def _read_csv(csv_path: Path) -> List[Dict[str, Any]]:
         try:
@@ -196,12 +200,14 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
                     dialect = csv.Sniffer().sniff(f.read(2048))
                     f.seek(0)
                 except Exception:
+                    logging.exception("Failed to sniff CSV dialect for %s", csv_path)
                     f.seek(0)
                     dialect = csv.excel
 
                 reader = csv.reader(f, dialect)
                 rows = list(reader)
         except Exception:
+            logging.exception("Failed to read delimited file %s", csv_path)
             return []
 
         if not rows:
@@ -221,11 +227,13 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
         try:
             import openpyxl  # dependency is installed in your environment
         except Exception:
+            logging.exception("Failed to import openpyxl while reading %s", xlsx_path)
             return []
 
         try:
             wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
         except Exception:
+            logging.exception("Failed to load spreadsheet %s", xlsx_path)
             return []
 
         out: List[Dict[str, Any]] = []
@@ -235,6 +243,7 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
             try:
                 it = ws.iter_rows(values_only=True)
             except Exception:
+                logging.exception("Failed to iterate rows in sheet %s of %s", getattr(ws, "title", "?"), xlsx_path)
                 continue
 
             # find first non-empty row as header
@@ -284,6 +293,7 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
                     import shutil
                     shutil.rmtree(tmpdir, ignore_errors=True)
                 except Exception:
+                    logging.exception("Failed to clean up temporary ODS conversion directory %s", tmpdir)
                     pass
 
     return []
@@ -455,6 +465,7 @@ def _configure_file_logger() -> Optional[logging.Logger]:
         return logger
 
     except Exception:
+        logging.exception("Failed to configure file logger at %s", LOG_PATH)
         return None
 
 _LOGGER = _configure_file_logger()
@@ -467,6 +478,7 @@ def log(msg):
     try:
         _LOGGER.info(f"[{WORKER_ID}] {msg}")
     except Exception:
+        logging.exception("Failed to write log message: %s", msg)
         pass
 
 def create_db_conn():
@@ -474,6 +486,7 @@ def create_db_conn():
     try:
         db_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
+        logging.exception("Failed to create database directory %s", db_path.parent)
         pass
     conn = sqlite3.connect(str(db_path), timeout=30, isolation_level=None, check_same_thread=False)
     ensure_db(conn)
@@ -482,6 +495,7 @@ def create_db_conn():
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA busy_timeout=5000;")
     except Exception:
+        logging.exception("Failed to set SQLite pragmas on %s", db_path)
         pass
     conn.row_factory = sqlite_dict_factory
     return conn
@@ -522,6 +536,7 @@ def log_decision(conn, job_id, file_id, step, detail):
         )
         conn.commit()
     except Exception:
+        logging.exception("Failed to persist decision log row for job_id=%s file_id=%s", job_id, file_id)
         pass
 
 def sqlite_dict_factory(cursor, row):
@@ -567,6 +582,7 @@ def claim_one(conn):
         try:
             job_id, file_id = row["job_id"], row["file_id"]
         except Exception:
+            logging.exception("Failed to read job_id/file_id from queued row")
             job_id, file_id = row[0], row[1]
 
     # 2) Atomar claimen mit identischen Bedingungen (gegen Race Conditions)
@@ -589,6 +605,7 @@ def claim_one(conn):
         try:
             claimed = int(r2["changes"])
         except Exception:
+            logging.exception("Failed to parse claim_one changes value")
             claimed = int(r2[0])
 
     if claimed == 1:
@@ -681,6 +698,7 @@ def increment_error_count(conn, file_id: str) -> int:
     try:
         return int(row["error_count"])
     except Exception:
+        logging.exception("Failed to read error_count from row for file_id=%s", file_id)
         return int(row[0])
 
 def finish_success(conn, job_id, file_id, status: str):
@@ -781,6 +799,7 @@ def replace_file_images(conn, file_id: str, images: List[Dict[str, object]] | No
             )
         conn.commit()
     except Exception as exc:
+        logging.exception("Failed to persist images for file_id=%s", file_id)
         log(f"[image_record_failed] file_id={file_id} err={exc}")
         traceback.print_exc()
 
@@ -821,6 +840,7 @@ def ai_score_text(
             _dbg_write(dbg_active_dir / "prompt.txt", user_prompt)
             _dbg_write(dbg_active_dir / "content_head.txt", content_sample[:2000])
         except Exception:
+            logging.exception("Failed to prepare ai_score_text debug directory at %s", target_dir)
             dbg_active_dir = None  # Debug nicht kritisch
 
     # --- HTTP-Request an Ollama ---
@@ -848,6 +868,7 @@ def ai_score_text(
                 _dbg_write(dbg_active_dir / "http_status.txt", f"{r.status_code}")
                 _dbg_write(dbg_active_dir / "latency_ms.txt", f"{int(elapsed*1000)}")
             except Exception:
+                logging.exception("Failed to write Ollama debug metadata to %s", dbg_active_dir)
                 pass
 
         r.raise_for_status()
@@ -858,6 +879,7 @@ def ai_score_text(
             try:
                 _dbg_write(dbg_active_dir / "raw_response.json", raw)
             except Exception:
+                logging.exception("Failed to write Ollama raw response debug file to %s", dbg_active_dir)
                 pass
 
         # --- JSON der Modellantwort parsen ---
@@ -865,6 +887,7 @@ def ai_score_text(
         try:
             ai = json.loads(raw) if raw else {}
         except Exception as e:
+            logging.exception("Failed to parse Ollama JSON response")
             if debug and dbg_active_dir:
                 _dbg_write(dbg_active_dir / "json_error.txt", str(e))
             ai = {}
@@ -874,6 +897,7 @@ def ai_score_text(
             try:
                 return float(x)
             except Exception:
+                logging.exception("Failed to convert AI score value to float")
                 return default
 
         result = {
@@ -905,15 +929,18 @@ def ai_score_text(
                 if r2.ok:
                     _dbg_write(dbg_active_dir / "why.txt", (r2.json().get("response") or "").strip())
             except Exception:
+                logging.exception("Failed to write Ollama explanation response to debug directory %s", dbg_active_dir)
                 pass
 
         return result
 
     except Exception as e:
+        logging.exception("ai_score_text failed to score text")
         if debug and dbg_active_dir:
             try:
                 _dbg_write(dbg_active_dir / "fatal_error.txt", str(e))
             except Exception:
+                logging.exception("Failed to write ai_score_text fatal error debug file to %s", dbg_active_dir)
                 pass
         # Fallback-Ergebnis bei Fehlern
         return {
@@ -963,8 +990,10 @@ def brain_ingest_text(
                                           "pre_brain_post",
                                           f"url={url} len={len(text)} chunk_tokens={payload.get('chunk_tokens')} overlap_tokens={payload.get('overlap_tokens')}")
             except Exception:
+                logging.exception("Failed to log pre_brain_post decision")
                 pass
     except Exception:
+        logging.exception("Failed to record pre_brain_post decision")
         pass
 
     dbg_on = debug
@@ -989,6 +1018,7 @@ def brain_ingest_text(
                 json.dumps(req_dump, ensure_ascii=False, indent=2), encoding="utf-8"
             )
         except Exception:
+            logging.exception("Failed to prepare brain_ingest debug directory at %s", target_dir)
             dbg_on = False
 
     try:
@@ -1001,6 +1031,7 @@ def brain_ingest_text(
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
+        logging.exception("Brain ingest returned HTTP error")
         # HTTP status errors (e.g., 400 Bad Request). Keep the response details.
         if dbg_on and dbg_base:
             try:
@@ -1017,9 +1048,11 @@ def brain_ingest_text(
                     json.dumps(http_dump, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
             except Exception:
+                logging.exception("Failed to write brain ingest HTTP error debug dump to %s", dbg_base)
                 pass
         raise
     except Exception as e:
+        logging.exception("Brain ingest request failed")
         # Non-HTTP exceptions: network errors, timeouts, JSON parse errors, etc.
         if dbg_on and dbg_base:
             try:
@@ -1032,6 +1065,7 @@ def brain_ingest_text(
                     json.dumps(err_dump, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
             except Exception:
+                logging.exception("Failed to write brain ingest error debug dump to %s", dbg_base)
                 pass
         raise
 
@@ -1045,9 +1079,11 @@ def _get_field(row, key_or_idx, fallback=None):
     try:
         return row[key_or_idx]
     except Exception:
+        logging.exception("Failed to fetch row field %s", key_or_idx)
         try:
             return row[int(key_or_idx)]
         except Exception:
+            logging.exception("Failed to fetch row field by index for key %s", key_or_idx)
             return fallback
 
 def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResult | None:
@@ -1087,6 +1123,7 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
             p = temp_file
             safe_log(conn, job_id, file_id, "downloaded", f"temp={p}")
         except Exception as exc:
+            logging.exception("Failed to download missing file from Nextcloud path=%s", path)
             log(f"[download_missing_error] job_id={job_id} path={path} err={exc}")
             update_file_result(conn, file_id, {"accepted": False, "error": "missing_file"})
             finish_error(conn, job_id, file_id, "error_missing_file", f"{exc}")
@@ -1103,6 +1140,7 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
                 log(f"[convert_for_docling] job_id={job_id} file_id={file_id} in={p} out={docling_input}")
                 log_decision(conn, job_id, file_id, "docling_preconvert", f"in={p.name} out={docling_input.name}")
         except Exception as exc:
+            logging.exception("Docling pre-conversion failed; continuing with original file")
             # Conversion is best-effort; fall back to original path
             log(f"[convert_for_docling_error] job_id={job_id} file_id={file_id} path={p} err={exc}")
 
@@ -1123,18 +1161,20 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
         log_decision(conn, job_id, file_id, "extract_ok",
                      f"chars={len(clean)} docling_chunks={len(extraction.chunks)} source={docling_source}")
     except ExtractionFailed as exc:
+        logging.exception("Document extraction failed")
         update_file_result(conn, file_id, {"accepted": False, "skipped": "extract_failed", "error": str(exc)})
         finish_error(conn, job_id, file_id, "error_extract_failed", str(exc))
         return None
     finally:
         # Keep temp_file (Nextcloud download) for post_extraction (SQL table import).
         # But cleanup any conversion tempdir created for docling input.
-        if conv_tmpdir:
-            try:
-                import shutil
-                shutil.rmtree(conv_tmpdir, ignore_errors=True)
-            except Exception:
-                pass
+            if conv_tmpdir:
+                try:
+                    import shutil
+                    shutil.rmtree(conv_tmpdir, ignore_errors=True)
+                except Exception:
+                    logging.exception("Failed to clean up docling conversion tempdir %s", conv_tmpdir)
+                    pass
 
     if not clean or len(clean) < MIN_CHARS:
         update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
@@ -1152,6 +1192,7 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
             # debug_dir is document-specific; keep it as root debug dir
             doc_dbg_dir = ensure_dir(debug_dir)
         except Exception:
+            logging.exception("Failed to prepare extraction debug directory at %s", debug_dir)
             doc_dbg_dir = None
 
     log_decision(conn, job_id, file_id, "extraction_complete", f"chars={len(clean)}")
@@ -1182,6 +1223,7 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     try:
         original_name = unquote(original_name)
     except Exception:
+        logging.exception("Failed to decode original filename %s", original_name)
         pass
     document_name = original_name or extraction.slug or Path(stage.original_path).name
     temp_path = stage.temp_path or stage.original_path
@@ -1216,6 +1258,7 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
             log(f"[ai_score_result] job_id={job_id} file_id={file_id} is_rel={is_rel} conf={conf}")
             safe_log(conn, job_id, file_id, "score", f"is_rel={is_rel} conf={conf}")
         except Exception as e:
+            logging.exception("AI relevance scoring failed for job_id=%s file_id=%s", job_id, file_id)
             update_file_result(conn, file_id, {"accepted": False, "error": f"ai_scoring_failed: {e}"})
             finish_error(conn, job_id, file_id, "error_ai_scoring", f"ai_scoring_failed: {e}")
             return
@@ -1243,6 +1286,7 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
         extraction_outcome.upload_images()
         replace_file_images(conn, file_id, extraction.images)
     except Exception as exc:
+        logging.exception("Image upload or persistence failed for file_id=%s", file_id)
         update_file_result(conn, file_id, {"accepted": False, "error": f"image_upload_failed: {exc}"})
         finish_error(conn, job_id, file_id, "error_image_upload", f"image_upload_failed: {exc}")
         return
@@ -1281,10 +1325,10 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
             # Only sample for add_context (keep payload small)
             table_lookup = {table_id: table_rows[:25]}
 
-           table_ref = f"[TABLE:{table_id}]"
+            table_ref = f"[TABLE:{table_id}]"
 
-           if table_ref not in clean_with_tables:
-               clean_with_tables = f"{table_ref}\n\n{clean_with_tables}"
+            if table_ref not in clean_with_tables:
+                clean_with_tables = f"{table_ref}\n\n{clean_with_tables}"
 
             safe_log(conn, job_id, file_id, "table_import_original_ok",
                      f"rows={len(table_rows)} src={src_path}")
@@ -1315,6 +1359,7 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
                 try:
                     table_lookup[table_id] = rows[:25]   # << nur “erste Zeilen”
                 except Exception:
+                    logging.exception("Failed to sample table rows for context for table_id=%s", table_id)
                     continue
         else:
             table_lookup = {}
@@ -1382,6 +1427,7 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
                         f.write("\n")
                     f.write("\n")
         except Exception:
+            logging.exception("Failed to write chunks_all debug file to %s", doc_dbg_dir)
             pass
     
     log(f"[add_context_start] job_id={job_id} file_id={file_id} chunks={len(chunk_texts)}")
@@ -1458,11 +1504,13 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
                 if not ok:
                     errors.append(f"chunk {idx} failed")
             except Exception as e:
+                logging.exception("Brain ingest failed for chunk %s/%s", idx, len(chunks))
                 safe_log(conn, job_id, file_id, "brain_err", f"chunk={idx} err={e}")
                 log(f"[brain_error] job_id={job_id} file_id={file_id} chunk={idx}/{len(chunks)} err={e}")
                 errors.append(f"chunk {idx} error: {e}")
             chunk_outcome.append(chunk_meta)
     except Exception as exc:
+        logging.exception("Failed while sending chunks to brain ingest")
         errors.append(str(exc))
 
     sanitized_images = extraction_outcome.sanitized_images()
@@ -1505,6 +1553,7 @@ def process_one(conn, job_id, file_id, stage: ExtractionStageResult | None = Non
                 if p.exists() and p.is_file() and p.name.startswith("nxc-"):
                     p.unlink()
         except Exception:
+            logging.exception("Failed to cleanup temporary download %s", active_stage.temp_path)
             pass
 
 def _start_pipeline(pipeline_executor: ThreadPoolExecutor, stage: ExtractionStageResult):
@@ -1521,12 +1570,14 @@ def _start_pipeline(pipeline_executor: ThreadPoolExecutor, stage: ExtractionStag
                     "starting relevance->embedding",
                 )
             except Exception:
+                logging.exception("Failed to log pipeline_start decision")
                 pass
             process_one(local_conn, stage.job_id, stage.file_id, stage)
         finally:
             try:
                 local_conn.close()
             except Exception:
+                logging.exception("Failed to close local pipeline connection")
                 pass
 
     return pipeline_executor.submit(_pipeline_task)
@@ -1555,6 +1606,7 @@ def main():
                     try:
                         local_conn.close()
                     except Exception:
+                        logging.exception("Failed to close worker task connection")
                         pass
 
             futures[executor.submit(_task)] = (job_id, file_id)
@@ -1582,12 +1634,14 @@ def main():
                     if result:
                         ready.append(result)
                 except Exception as exc:
+                    logging.exception("Docling extraction task failed")
                     log(f"[docling_task_error] job={job_meta} err={exc}")
 
             if pipeline_future and pipeline_future.done():
                 try:
                     pipeline_future.result()
                 except Exception as exc:
+                    logging.exception("Post-extraction pipeline future failed")
                     log(f"[pipeline_task_error] err={exc}")
                 pipeline_future = None
                 pipeline_future_job = None
@@ -1607,6 +1661,7 @@ def main():
                 log("no queued jobs found - shutting down")
                 break
     except KeyboardInterrupt:
+        logging.exception("Worker interrupted")
         log("stopping...")
     finally:
         executor.shutdown(wait=False)
@@ -1614,6 +1669,7 @@ def main():
         try:
             conn.close()
         except Exception:
+            logging.exception("Failed to close main database connection")
             pass
         log("worker stopped")
 
