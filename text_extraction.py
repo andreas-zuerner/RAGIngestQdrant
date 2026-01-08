@@ -828,6 +828,55 @@ class DoclingServeIngestor:
             suffix = f"; {detail}" if detail else ""
             raise DoclingUnavailableError(f"docling-serve reported error: {error_msg}{suffix}")
 
+        # --- Additional failure detection (docling_jobkit / conversion failures) ---
+        # Some docling deployments do not set status/state=failed, but report conversion
+        # failures via fields like "conversion_status" and/or a non-empty "errors" list.
+        def _get_str(*keys: str) -> str:
+            for k in keys:
+                v = payload.get(k)
+                if v is None:
+                    continue
+                try:
+                    s = str(v).strip()
+                except Exception:
+                    continue
+                if s:
+                    return s
+            return ""
+
+        # 1) Explicit conversion status (common with docling_jobkit)
+        conv = _get_str("conversion_status", "conversionStatus", "ConversionStatus", "conversion-status").lower()
+        if conv in {"failure", "failed", "error"} or "conversionstatus.failure" in conv:
+            detail = _get_str("detail", "message", "error")
+            raise DoclingUnavailableError(
+                f"docling-serve reported conversion failure{f'; {detail}' if detail else ''}"
+            )
+
+        # 2) Non-empty errors list (also common with docling_jobkit)
+        errors = payload.get("errors")
+        if isinstance(errors, list) and errors:
+            # keep logs short but useful
+            first = errors[0]
+            try:
+                first_s = json.dumps(first, ensure_ascii=False) if isinstance(first, (dict, list)) else str(first)
+            except Exception:
+                first_s = str(first)
+            raise DoclingUnavailableError(f"docling-serve reported conversion errors: {first_s}")
+
+        # 3) Known "unprocessable PDF" signatures that should abort early
+        #    Example from your logs: "could not find the page-dimensions"
+        detail_blob = " ".join(
+            s for s in (
+                _get_str("detail", "message", "error"),
+                str(payload.get("result") or ""),
+            )
+            if s
+        ).lower()
+        if "could not find the page-dimensions" in detail_blob:
+            raise DoclingUnavailableError(
+                "docling-serve reported conversion failure; could not find the page-dimensions"
+            )
+
     def _derive_async_url(self, service_url: str) -> str:
         """Best-effort async endpoint derivation.
 
