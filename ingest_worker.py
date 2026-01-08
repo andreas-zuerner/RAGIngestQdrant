@@ -390,6 +390,8 @@ class ExtractionStageResult:
     doc_dbg_dir: Path | None
     original_path: str
     temp_path: str | None
+    converted_path: str | None
+    converted_tmpdir: str | None
     temp_name: str | None
 
 
@@ -1132,6 +1134,8 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
 
     docling_input = p
     conv_tmpdir: Optional[Path] = None
+    converted_path: str | None = None
+    converted_tmpdir: str | None = None
 
     try:
         # Convert certain formats (e.g., ODS) BEFORE sending to docling
@@ -1139,6 +1143,8 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
             docling_input, conv_tmpdir = convert_for_docling(p)
             if docling_input != p:
                 log(f"[convert_for_docling] job_id={job_id} file_id={file_id} in={p} out={docling_input}")
+                converted_path = str(docling_input)
+                converted_tmpdir = str(conv_tmpdir) if conv_tmpdir else None
                 log_decision(conn, job_id, file_id, "docling_preconvert", f"in={p.name} out={docling_input.name}")
         except Exception as exc:
             logging.exception("Docling pre-conversion failed; continuing with original file")
@@ -1166,16 +1172,6 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
         update_file_result(conn, file_id, {"accepted": False, "skipped": "extract_failed", "error": str(exc)})
         finish_error(conn, job_id, file_id, "error_extract_failed", str(exc))
         return None
-    finally:
-        # Keep temp_file (Nextcloud download) for post_extraction (SQL table import).
-        # But cleanup any conversion tempdir created for docling input.
-            if conv_tmpdir:
-                try:
-                    import shutil
-                    shutil.rmtree(conv_tmpdir, ignore_errors=True)
-                except Exception:
-                    logging.exception("Failed to clean up docling conversion tempdir %s", conv_tmpdir)
-                    pass
 
     if not clean or len(clean) < MIN_CHARS:
         update_file_result(conn, file_id, {"accepted": False, "skipped": "too_short", "chars": len(clean)})
@@ -1207,6 +1203,8 @@ def run_extraction_stage(conn, job_id: str, file_id: str) -> ExtractionStageResu
         doc_dbg_dir,
         original_path,
         str(temp_file) if temp_file else None,
+        converted_path,
+        converted_tmpdir,
         temp_name,
     )
 
@@ -1302,7 +1300,12 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
     table_lookup: Dict[str, List[Dict[str, Any]]] = {}
 
     if is_table_file:
-        src_path = Path(temp_path) if temp_path else Path(stage.original_path)
+        # Prefer the converted XLSX when we pre-converted (e.g. ODS->XLSX),
+        # because load_table_rows_from_file expects a spreadsheet format it can parse.
+        if stage.converted_path:
+            src_path = Path(stage.converted_path)
+        else:
+            src_path = Path(temp_path) if temp_path else Path(stage.original_path)
         
         safe_log(conn, job_id, file_id, "table_import_src",
                  f"src={src_path} exists={src_path.exists()} size={(src_path.stat().st_size if src_path.exists() else 'NA')}")
@@ -1555,6 +1558,23 @@ def process_one(conn, job_id, file_id, stage: ExtractionStageResult | None = Non
                     p.unlink()
         except Exception:
             logging.exception("Failed to cleanup temporary download %s", active_stage.temp_path)
+            pass
+
+        # Cleanup conversion tempdir AFTER full processing (needed for table import).
+        try:
+            if active_stage.converted_tmpdir:
+                import shutil
+                shutil.rmtree(Path(active_stage.converted_tmpdir), ignore_errors=True)
+            elif active_stage.converted_path:
+                p2 = Path(active_stage.converted_path)
+                if p2.exists() and p2.is_file() and p2.name.startswith("nxc-"):
+                    p2.unlink()
+        except Exception:
+            logging.exception(
+                "Failed to cleanup conversion artifacts converted_path=%s converted_tmpdir=%s",
+                active_stage.converted_path,
+                active_stage.converted_tmpdir,
+            )
             pass
 
 def _start_pipeline(pipeline_executor: ThreadPoolExecutor, stage: ExtractionStageResult):
