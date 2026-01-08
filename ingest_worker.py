@@ -35,6 +35,7 @@ from text_extraction import (
     ExtractionOutcome,
     SUPPORTED_EXTENSIONS,
     ensure_dir,
+    _dbg_write,
     extension_category,
     extract_document,
     convert_for_docling,
