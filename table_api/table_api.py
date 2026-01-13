@@ -6,9 +6,11 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
+from variables import initENV
+
 
 class Settings(BaseSettings):
-    DB_PATH: str = "/srv/rag/RAGIngestQdrant/DocumentDatabase/state.db"
+    DB_PATH: str = initENV.DB_PATH
     TABLE_API_KEY: str | None = None  # set via env, recommended
 
 settings = Settings()

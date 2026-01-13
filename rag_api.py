@@ -3,7 +3,7 @@ Minimal FastAPI service for RAGIngestQdrant.
 
 Purpose:
 - Provide a stable HTTP surface for reading runtime status + SQLite content
-  (e.g., tables stored in DocumentDatabase/state.db).
+  (e.g., tables stored in the DB_PATH configured in variables/.env.local).
 - Keep it minimal and non-invasive: no new ingestion logic, no heavy refactors.
 
 Notes:
