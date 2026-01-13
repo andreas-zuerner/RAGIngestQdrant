@@ -20,7 +20,8 @@ RUN pip install --no-cache-dir --upgrade pip \
     flask \
     sqlite-web \
     requests \
-    python-dotenv
+    python-dotenv \
+    openpyxl
 
 # Copy code (for production images). In development, docker-compose bind-mounts the repo over /app.
 COPY . /app
