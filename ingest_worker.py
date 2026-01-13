@@ -168,6 +168,9 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
         return []
 
     ext = path.suffix.lower()
+    log_debug(
+        f"[table_load_start] path={path} ext={ext} size={path.stat().st_size if path.exists() else 'NA'} max_rows={max_rows}"
+    )
 
     def _is_blank_row(values) -> bool:
         if values is None:
@@ -186,24 +189,31 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
         if isinstance(v, (str, int, float, bool)):
             return v
         # datetime/date-like
-            if hasattr(v, "isoformat"):
-                try:
-                    return v.isoformat()
-                except Exception:
-                    logging.exception("Failed to convert value to JSON-serializable string")
-                    pass
-            return str(v)
+        if hasattr(v, "isoformat"):
+            try:
+                return v.isoformat()
+            except Exception:
+                logging.exception("Failed to convert value to JSON-serializable string")
+                pass
+        return str(v)
 
     def _read_csv(csv_path: Path) -> List[Dict[str, Any]]:
+        dialect = None
         try:
-            with csv_path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+            with csv_path.open("r", encoding="utf-8-sig", errors="replace", newline="") as f:
+                sample = f.read(2048)
                 try:
-                    dialect = csv.Sniffer().sniff(f.read(2048))
+                    dialect = csv.Sniffer().sniff(sample)
                     f.seek(0)
                 except Exception:
                     logging.exception("Failed to sniff CSV dialect for %s", csv_path)
                     f.seek(0)
-                    dialect = csv.excel
+                    if ext in {".tsv", ".tab"}:
+                        dialect = csv.excel_tab
+                    else:
+                        dialect = csv.excel
+                if dialect is None:
+                    dialect = csv.excel_tab if ext in {".tsv", ".tab"} else csv.excel
 
                 reader = csv.reader(f, dialect)
                 rows = list(reader)
@@ -212,6 +222,7 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
             return []
 
         if not rows:
+            log_debug(f"[table_load_csv_empty] path={csv_path}")
             return []
 
         headers = [h.strip() or f"col_{idx}" for idx, h in enumerate(rows[0])]
@@ -222,6 +233,7 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
             if _is_blank_row(row):
                 continue
             parsed_rows.append({headers[i]: (row[i] if i < len(row) else "") for i in range(len(headers))})
+        log_debug(f"[table_load_csv_done] path={csv_path} rows={len(parsed_rows)} headers={len(headers)}")
         return parsed_rows
 
     def _read_xlsx(xlsx_path: Path) -> List[Dict[str, Any]]:
@@ -239,6 +251,8 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
 
         out: List[Dict[str, Any]] = []
         sheets = list(wb.worksheets)
+        if not sheets:
+            log_debug(f"[table_load_xlsx_no_sheets] path={xlsx_path}")
 
         for ws in sheets:
             try:
@@ -259,10 +273,16 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
                 break
 
             if not header:
+                log_debug(f"[table_load_xlsx_empty_sheet] path={xlsx_path} sheet={getattr(ws, 'title', '?')}")
                 continue
 
+            sheet_rows = 0
             for row in it:
                 if max_rows and len(out) >= max_rows:
+                    try:
+                        wb.close()
+                    except Exception:
+                        logging.exception("Failed to close workbook after early return for %s", xlsx_path)
                     return out
                 if _is_blank_row(row):
                     continue
@@ -271,7 +291,16 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
                 if len(sheets) > 1:
                     d["__sheet__"] = ws.title
                 out.append(d)
+                sheet_rows += 1
+            log_debug(
+                f"[table_load_xlsx_sheet_done] path={xlsx_path} sheet={getattr(ws, 'title', '?')} rows={sheet_rows}"
+            )
 
+        try:
+            wb.close()
+        except Exception:
+            logging.exception("Failed to close workbook for %s", xlsx_path)
+        log_debug(f"[table_load_xlsx_done] path={xlsx_path} rows={len(out)} sheets={len(sheets)}")
         return out
 
     # Dispatch by extension
@@ -286,6 +315,7 @@ def load_table_rows_from_file(path: Path, *, max_rows: int = 5000) -> List[Dict[
         try:
             if xlsx_path:
                 return _read_xlsx(xlsx_path)
+            log_debug(f"[table_load_ods_no_output] path={path}")
             return []
         finally:
             # cleanup conversion dir
@@ -1337,12 +1367,15 @@ def run_post_extraction_pipeline(conn, stage: ExtractionStageResult):
             safe_log(conn, job_id, file_id, "table_import_original_ok",
                      f"rows={len(table_rows)} src={src_path}")
         else:
-            # optionaler Fallback: du kannst hier entweder
-            # a) gar nichts speichern oder
-            # b) als Notnagel doch Markdown-Parsing machen.
-            # Ich würde für Table-Files a) bevorzugen:
             safe_log(conn, job_id, file_id, "table_import_original_empty",
                      f"src={src_path}")
+            clean_with_tables, found_tables = extract_markdown_tables_from_text(clean)
+            if found_tables:
+                delete_tables_for_file(conn, file_id)
+                store_tables(conn, file_id, stage.original_path, found_tables)
+                safe_log(conn, job_id, file_id, "tables_extracted_fallback", f"count={len(found_tables)}")
+
+                table_lookup = {t["table_id"]: (t.get("rows") or [])[:25] for t in found_tables}
     else:
         # non-table: wie bisher
         tables_to_store = found_tables
