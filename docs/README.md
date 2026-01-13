@@ -245,6 +245,10 @@ python web_gui.py
 
 The GUI reads and writes `variables/.env.local` by default (controlled via `ENV_FILE`) and requires access to Qdrant, Nextcloud, and the local `DocumentDatabase/state.db`. The reset action drops the configured Qdrant collection, removes the state database, clears the `RAG-images` folder in Nextcloud, and can optionally restore `variables/.env.local` from `variables/.env.local.example`.
 
+### Restart Docker after changes
+docker compose down
+docker compose up -d --build
+
 ### LAN / reverse-proxy deployment (Apache or lighttpd)
 
 The GUI must listen on the LAN for future Dockerization. Bind to all interfaces via `WEB_GUI_HOST=0.0.0.0` (default) and use a separate secret in production.
